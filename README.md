@@ -25,7 +25,8 @@ cargo run --release -p screenpen
 | Esc | Stop drawing |
 | Ctrl+Alt+Shift+Q | Quit |
 
-The log goes to `%TEMP%\screenpen.log`.
+screenpen lives in the tray: the icon is yellow when idle, red while drawing and purple in ghost mode.
+Left click toggles drawing, right click opens the menu. The log goes to `%TEMP%\screenpen.log`.
 
 ## License
 

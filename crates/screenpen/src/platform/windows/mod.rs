@@ -4,6 +4,7 @@
 //! Everything is logged to %TEMP%\screenpen.log for the manual checklist in PLAN.md.
 
 mod surface;
+mod tray;
 
 use std::cell::RefCell;
 use std::io::Write as _;
@@ -12,12 +13,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use surface::{Surface, bgra};
 use tiny_skia::{LineCap, LineJoin, Paint, PathBuilder, Rect, Stroke, Transform};
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use tray::{Command, Mode, Tray, WM_SECOND_INSTANCE, WM_TRAY};
+use windows_sys::Win32::Foundation::{
+    ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+};
 use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromPoint, MonitorFromWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
     SetProcessDpiAwarenessContext,
@@ -29,20 +34,21 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, GWL_EXSTYLE,
-    GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_CROSS, LoadCursorW, MA_NOACTIVATE, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow, SetWindowDisplayAffinity, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_DISPLAYCHANGE,
-    WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_POINTERACTIVATE,
-    WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE, WNDCLASSEXW, WS_CAPTION, WS_EX_LAYERED,
+    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW,
+    GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_CROSS, LoadCursorW,
+    MA_NOACTIVATE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
+    SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
+    WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_POINTERACTIVATE, WM_POINTERDOWN,
+    WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONUP, WNDCLASSEXW, WS_CAPTION, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 const HOTKEY_TOGGLE: i32 = 1; // Ctrl+Alt+Shift+A
 const HOTKEY_UNGHOST: i32 = 2; // Ctrl+Alt+Shift+G
-const HOTKEY_QUIT: i32 = 3; // Ctrl+Alt+Shift+Q (spike only, until the tray exists)
+const HOTKEY_QUIT: i32 = 3; // Ctrl+Alt+Shift+Q
 const PA_NOACTIVATE: LRESULT = 3; // WM_POINTERACTIVATE result
 const POINTER_FLAG_FIRSTBUTTON: usize = 0x0010; // HIWORD(wParam) of WM_POINTER*
 
@@ -84,6 +90,10 @@ struct App {
     hide_palette_from_capture: bool,
     forward: Forward,
     rebuild: bool,
+    tray: Tray,
+    tray_hwnd: HWND,
+    /// Broadcast when Explorer restarts; the tray icon has to be added again.
+    taskbar_created: u32,
 }
 
 thread_local! {
@@ -95,8 +105,19 @@ pub fn run() {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         EnableMouseInPointer(1);
     }
+    // One instance: a second launch pokes the running one, which shows a notification.
+    let mutex_name = wide("Local\\screenpen");
+    unsafe {
+        CreateMutexW(null(), 0, mutex_name.as_ptr());
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let running = FindWindowW(wide(TRAY_CLASS).as_ptr(), null());
+            PostMessageW(running, WM_SECOND_INSTANCE, 0, 0);
+            return;
+        }
+    }
     log("start");
     register_classes();
+    let tray_hwnd = create_hidden_window(TRAY_CLASS);
     let (palette, palette_surface, palette_scale) = create_palette();
     let app = App {
         overlays: create_overlays(),
@@ -112,10 +133,14 @@ pub fn run() {
         hide_palette_from_capture: false,
         forward: Forward::Post,
         rebuild: false,
+        tray: Tray::new(tray_hwnd),
+        tray_hwnd,
+        taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
     };
     APP.with(|cell| *cell.borrow_mut() = Some(app));
 
     let mods = MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT;
+    let mut taken = Vec::new();
     for (id, key) in [
         (HOTKEY_TOGGLE, b'A'),
         (HOTKEY_UNGHOST, b'G'),
@@ -126,7 +151,24 @@ pub fn run() {
             "hotkey Ctrl+Alt+Shift+{} registered: {ok}",
             key as char
         ));
+        if !ok {
+            taken.push(format!("Ctrl+Alt+Shift+{}", key as char));
+        }
     }
+    with_app(|app| {
+        if taken.is_empty() {
+            app.tray.notify(
+                "screenpen is running",
+                "Ctrl+Alt+Shift+A or click the tray icon to draw.",
+            );
+        } else {
+            let text = format!(
+                "Taken by another app: {}. Use the tray icon.",
+                taken.join(", ")
+            );
+            app.tray.notify("screenpen: hotkey unavailable", &text);
+        }
+    });
 
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {
@@ -146,6 +188,9 @@ pub fn run() {
         });
     }
     log("quit");
+    // Drop the app now: thread-locals of the main thread aren't dropped at exit, and
+    // the tray icon would linger until the mouse passes over it.
+    APP.with(|cell| cell.borrow_mut().take());
 }
 
 fn with_app(f: impl FnOnce(&mut App)) {
@@ -168,11 +213,16 @@ fn wide(s: &str) -> Vec<u16> {
 
 const OVERLAY_CLASS: &str = "screenpen.overlay";
 const PALETTE_CLASS: &str = "screenpen.palette";
+const TRAY_CLASS: &str = "screenpen.tray";
 
 fn register_classes() {
     unsafe {
         let instance = GetModuleHandleW(null());
-        for (name, cursor) in [(OVERLAY_CLASS, IDC_CROSS), (PALETTE_CLASS, null())] {
+        for (name, cursor) in [
+            (OVERLAY_CLASS, IDC_CROSS),
+            (PALETTE_CLASS, null()),
+            (TRAY_CLASS, null()),
+        ] {
             let name = wide(name);
             let class = WNDCLASSEXW {
                 cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -189,6 +239,27 @@ fn register_classes() {
             };
             RegisterClassExW(&class);
         }
+    }
+}
+
+/// A never-shown window that receives tray callbacks.
+fn create_hidden_window(class: &str) -> HWND {
+    let class = wide(class);
+    unsafe {
+        CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            class.as_ptr(),
+            class.as_ptr(),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            null_mut(),
+            null_mut(),
+            GetModuleHandleW(null()),
+            null(),
+        )
     }
 }
 
@@ -348,6 +419,7 @@ fn show(app: &mut App) {
     }
     show_palette(app);
     focus_overlay_under_cursor(app);
+    update_tray(app);
 }
 
 fn hide(app: &mut App) {
@@ -359,6 +431,7 @@ fn hide(app: &mut App) {
     unsafe { ShowWindow(app.palette, SW_HIDE) };
     let ok = unsafe { SetForegroundWindow(app.previous) } != 0;
     log(&format!("hide: focus back to {:?}: {ok}", app.previous));
+    update_tray(app);
 }
 
 fn set_ghost(app: &mut App, ghost: bool) {
@@ -376,6 +449,79 @@ fn set_ghost(app: &mut App, ghost: bool) {
         focus_overlay_under_cursor(app);
         log("ghost off");
     }
+    update_tray(app);
+}
+
+fn mode(app: &App) -> Mode {
+    match (app.active, app.ghost) {
+        (false, _) => Mode::Idle,
+        (true, false) => Mode::Drawing,
+        (true, true) => Mode::Ghost,
+    }
+}
+
+fn update_tray(app: &mut App) {
+    let mode = mode(app);
+    app.tray.set_mode(mode);
+}
+
+fn set_capture_hiding(app: &mut App, on: bool) {
+    app.hide_palette_from_capture = on;
+    let affinity = if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
+    let ok = unsafe { SetWindowDisplayAffinity(app.palette, affinity) } != 0;
+    log(&format!("palette hidden from capture: {on} ({ok})"));
+}
+
+fn on_tray_command(app: &mut App, command: Command) {
+    match command {
+        Command::ToggleDrawing if app.active => hide(app),
+        Command::ToggleDrawing => show(app),
+        Command::ToggleGhost if app.active => set_ghost(app, !app.ghost),
+        Command::ToggleGhost => {}
+        Command::ToggleCaptureHiding => set_capture_hiding(app, !app.hide_palette_from_capture),
+        Command::Quit => unsafe { PostQuitMessage(0) },
+    }
+}
+
+/// Tray window messages. The menu runs a modal loop, so it's shown with the app
+/// state released and the picked command is applied afterwards.
+fn on_tray_message(hwnd: HWND, msg: u32, lparam: LPARAM) -> bool {
+    let mut state = None;
+    with_app(|app| {
+        if hwnd == app.tray_hwnd {
+            state = Some((
+                mode(app),
+                app.hide_palette_from_capture,
+                app.taskbar_created,
+            ));
+        }
+    });
+    let Some((mode, hide_from_capture, taskbar_created)) = state else {
+        return false;
+    };
+    match msg {
+        WM_TRAY => match lparam as u32 {
+            WM_LBUTTONUP => with_app(|app| on_tray_command(app, Command::ToggleDrawing)),
+            WM_RBUTTONUP | WM_CONTEXTMENU => {
+                if let Some(command) = Tray::menu(hwnd, mode, hide_from_capture) {
+                    with_app(|app| on_tray_command(app, command));
+                }
+            }
+            _ => {}
+        },
+        WM_SECOND_INSTANCE => with_app(|app| {
+            app.tray.notify(
+                "screenpen is already running",
+                "Ctrl+Alt+Shift+A or click the tray icon to draw.",
+            )
+        }),
+        m if m == taskbar_created => with_app(|app| {
+            let ok = app.tray.add();
+            log(&format!("explorer restarted, tray icon re-added: {ok}"));
+        }),
+        _ => return false,
+    }
+    true
 }
 
 fn set_click_through(hwnd: HWND, on: bool) {
@@ -626,19 +772,7 @@ fn on_key(app: &mut App, index: usize, vk: u16) {
             };
             log(&format!("slide key forwarding: {:?}", app.forward));
         }
-        VK_F9 => {
-            app.hide_palette_from_capture = !app.hide_palette_from_capture;
-            let affinity = if app.hide_palette_from_capture {
-                WDA_EXCLUDEFROMCAPTURE
-            } else {
-                WDA_NONE
-            };
-            let ok = unsafe { SetWindowDisplayAffinity(app.palette, affinity) } != 0;
-            log(&format!(
-                "palette hidden from capture: {} ({ok})",
-                app.hide_palette_from_capture
-            ));
-        }
+        VK_F9 => set_capture_hiding(app, !app.hide_palette_from_capture),
         VK_PRIOR | VK_NEXT | VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN => forward_key(app, index, vk),
         k if k == b'G' as u16 => set_ghost(app, true),
         k if k == b'C' as u16 => {
@@ -715,6 +849,9 @@ fn forward_key(app: &mut App, index: usize, vk: u16) {
 // MARK: window procedure
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if on_tray_message(hwnd, msg, lparam) {
+        return 0;
+    }
     let mut handled: Option<LRESULT> = None;
     match msg {
         WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP => {
