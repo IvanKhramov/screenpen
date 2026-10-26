@@ -66,6 +66,8 @@ fn scale_at(monitors: &[Monitor], at: (i32, i32)) -> f32 {
 
 pub struct PaletteWindow {
     pixmap: Option<Pixmap>,
+    /// The user's interface scale, multiplied into `scale`.
+    pub ui_scale: f32,
     pub scale: f32,
     pub origin: (i32, i32),
     pub palette: Palette,
@@ -83,6 +85,7 @@ impl PaletteWindow {
         PaletteWindow {
             pixmap: None,
             scale: 1.0,
+            ui_scale: 1.0,
             origin: (0, 0),
             palette,
             drag: None,
@@ -129,7 +132,7 @@ impl PaletteWindow {
 
     pub fn show(&mut self, display: &mut dyn Display, monitors: &[Monitor], look: &Look) {
         self.visible = true;
-        self.scale = scale_at(monitors, self.center());
+        self.scale = scale_at(monitors, self.center()) * self.ui_scale;
         self.render(display, look);
         display.show(Win::Palette);
     }
@@ -174,14 +177,14 @@ impl PaletteWindow {
             y = area.bottom() - h - margin;
         }
         self.origin = (x, y);
-        self.scale = scale_at(monitors, self.center());
+        self.scale = scale_at(monitors, self.center()) * self.ui_scale;
         self.render(display, look);
     }
 
     /// Top center of the monitor containing `at`.
     pub fn default_origin(&self, monitors: &[Monitor], at: (i32, i32)) -> (i32, i32) {
         let area = work_area(monitors, at);
-        let scale = scale_at(monitors, at);
+        let scale = scale_at(monitors, at) * self.ui_scale;
         let (w, _) = self.palette.size_px(scale);
         (
             area.x + (area.w - w as i32) / 2,

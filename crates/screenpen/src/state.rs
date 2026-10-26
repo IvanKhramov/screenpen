@@ -1,7 +1,7 @@
 //! Tool, color and width shared by every screen and the palette.
 
-use screenpen_core::shortcuts::next_width;
-use screenpen_core::{Blend, Rgba, Shortcuts, Style, ToolKind};
+use screenpen_core::shortcuts::{next_text_size, next_width};
+use screenpen_core::{Blend, Rgba, Shortcuts, Style, TextStyle, ToolKind};
 
 /// How much the screen behind the ink is darkened while drawing.
 pub const DIM_LEVELS: [(f32, &str); 4] = [
@@ -24,6 +24,13 @@ pub struct ToolState {
     pub dim: f32,
     pub whiteboard: bool,
     pub shortcuts: Shortcuts,
+    /// Size of new text, in points.
+    pub text_size: f32,
+    /// Font, weight, slant, plate and outline of new text.
+    pub text_style: TextStyle,
+    /// Multiplier for the palette, tooltips, cheat sheet and settings window,
+    /// on top of the system scale.
+    pub ui_scale: f32,
 }
 
 impl Default for ToolState {
@@ -37,6 +44,9 @@ impl Default for ToolState {
             dim: 0.0,
             whiteboard: false,
             shortcuts: Shortcuts::default(),
+            text_size: 28.0,
+            text_style: TextStyle::default(),
+            ui_scale: 1.0,
         }
     }
 }
@@ -46,9 +56,12 @@ impl ToolState {
         self.colors[self.color_index.min(self.colors.len() - 1)]
     }
 
-    /// Text size follows the width so one control sizes everything.
     pub fn font_size(&self) -> f32 {
-        (self.width * 5.0).max(14.0)
+        self.text_size
+    }
+
+    pub fn step_text_size(&mut self, bigger: bool) {
+        self.text_size = next_text_size(self.text_size, bigger);
     }
 
     pub fn badge_radius(&self) -> f32 {
@@ -74,4 +87,13 @@ impl ToolState {
     pub fn step_width(&mut self, thicker: bool) {
         self.width = next_width(self.width, thicker);
     }
+}
+
+/// Interface scale limits and step (Ctrl+wheel over the palette).
+pub const UI_SCALE: (f32, f32, f32) = (0.75, 2.0, 0.1);
+
+pub fn step_ui_scale(scale: f32, bigger: bool) -> f32 {
+    let (min, max, step) = UI_SCALE;
+    let next = if bigger { scale + step } else { scale - step };
+    ((next * 20.0).round() / 20.0).clamp(min, max)
 }

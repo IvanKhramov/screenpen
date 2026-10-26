@@ -2,7 +2,7 @@
 //! tiny-skia. Layout is in points; rendering takes the monitor scale.
 
 use screenpen_core::render::{ChannelOrder, skia_color};
-use screenpen_core::{Action, Point, Rect, Rgba, Shortcuts, ToolKind, text};
+use screenpen_core::{Action, Point, Rect, Rgba, Shortcuts, TextStyle, ToolKind, text};
 use tiny_skia::{
     FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapMut, Stroke, Transform,
 };
@@ -26,6 +26,8 @@ impl Item {
             [
                 Action::Thinner,
                 Action::Thicker,
+                Action::TextSmaller,
+                Action::TextBigger,
                 Action::Undo,
                 Action::Redo,
                 Action::Clear,
@@ -46,6 +48,8 @@ impl Item {
     #[allow(dead_code)]
     pub fn all() -> Vec<Item> {
         let mut items = Item::defaults();
+        items.insert(items.len() - 1, Item::Action(Action::Bold));
+        items.insert(items.len() - 1, Item::Action(Action::Italic));
         items.insert(items.len() - 1, Item::Action(Action::SelectAll));
         items.insert(items.len() - 1, Item::Action(Action::BringToFront));
         items.insert(items.len() - 1, Item::Action(Action::DeleteSelection));
@@ -74,6 +78,9 @@ impl Item {
             Item::Action(Action::Tool(_)) => 0,
             Item::Action(Action::Color(_)) => 1,
             Item::Action(Action::Thinner | Action::Thicker) => 2,
+            Item::Action(
+                Action::TextSmaller | Action::TextBigger | Action::Bold | Action::Italic,
+            ) => 7,
             Item::Action(Action::Undo | Action::Redo | Action::Clear) => 3,
             Item::Action(
                 Action::SelectAll | Action::BringToFront | Action::DeleteSelection | Action::Escape,
@@ -119,6 +126,8 @@ pub fn chord_label(c: screenpen_core::Chord) -> String {
 /// What the palette highlights.
 pub struct Look {
     pub tool: ToolKind,
+    pub bold: bool,
+    pub italic: bool,
     pub spotlight: bool,
     pub frozen: bool,
     pub color_index: usize,
@@ -242,6 +251,8 @@ impl Palette {
                 Item::Action(Action::Ghost) => look.ghost,
                 Item::Action(Action::Whiteboard) => look.whiteboard,
                 Item::Action(Action::Spotlight) => look.spotlight,
+                Item::Action(Action::Bold) => look.bold,
+                Item::Action(Action::Italic) => look.italic,
                 Item::Action(Action::Freeze) => look.frozen,
                 _ => false,
             };
@@ -620,6 +631,36 @@ fn draw_icon(
             line(pixmap, &[(13.0, 14.0), (15.0, 18.0)], 1.6);
         }
         Action::Help => fill(pixmap, glyph(cell, "?", 17.0), ink, t, o),
+        Action::TextSmaller | Action::TextBigger => {
+            let bigger = action == Action::TextBigger;
+            let a = glyph(
+                Rect::new(cell.x - 3.0, cell.y, cell.width, cell.height),
+                "A",
+                if bigger { 19.0 } else { 13.0 },
+            );
+            fill(pixmap, a, ink, t, o);
+            line(pixmap, &[(15.5, 10.0), (20.0, 10.0)], 1.6);
+            if bigger {
+                line(pixmap, &[(17.75, 7.75), (17.75, 12.25)], 1.6);
+            }
+        }
+        Action::Bold | Action::Italic => {
+            let style = TextStyle {
+                bold: action == Action::Bold,
+                italic: action == Action::Italic,
+                ..TextStyle::default()
+            };
+            let letter = if action == Action::Bold { "B" } else { "I" };
+            if let Some(path) = text::path_styled(letter, 18.0, Point::default(), &style) {
+                let b = path.bounds();
+                let c = cell.center();
+                let centered = path.transform(Transform::from_translate(
+                    c.x - (b.left() + b.right()) / 2.0,
+                    c.y - (b.top() + b.bottom()) / 2.0,
+                ));
+                fill(pixmap, centered, ink, t, o);
+            }
+        }
         Action::Tool(ToolKind::Laser) => {
             let c = cell.center();
             let red = Rgba::rgb(1.0, 0.25, 0.25);
@@ -870,6 +911,8 @@ mod tests {
     fn look() -> Look {
         Look {
             tool: ToolKind::Pen,
+            bold: false,
+            italic: false,
             spotlight: false,
             frozen: false,
             color_index: 0,

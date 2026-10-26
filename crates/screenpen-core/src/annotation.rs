@@ -74,6 +74,20 @@ pub enum AnnotationKind {
     Badge,
 }
 
+/// How a text annotation looks beyond its color and size.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextStyle {
+    /// A system font family; None is the default sans-serif.
+    pub family: Option<String>,
+    pub bold: bool,
+    pub italic: bool,
+    /// A translucent plate behind the text, for busy backgrounds.
+    pub background: bool,
+    /// A contrasting outline around the glyphs.
+    pub outline: bool,
+}
+
 /// Vector geometry of one annotation, in the owning screen's top-left point space.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -105,6 +119,9 @@ pub enum Geometry {
         origin: Point,
         string: String,
         font_size: f32,
+        /// Missing in files written before text styles existed.
+        #[serde(default)]
+        style: TextStyle,
     },
     Badge {
         center: Point,
@@ -157,10 +174,12 @@ impl Geometry {
                 origin,
                 string,
                 font_size,
+                style,
             } => Geometry::Text {
                 origin: mv(origin),
                 string: string.clone(),
                 font_size: *font_size,
+                style: style.clone(),
             },
             Geometry::Badge {
                 center,

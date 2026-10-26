@@ -3,10 +3,13 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{
+    Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, Style, SwashCache, Weight,
+};
 use swash::zeno::Command;
 use tiny_skia::{Path, PathBuilder};
 
+use crate::annotation::TextStyle;
 use crate::geom::Point;
 
 struct Fonts {
@@ -41,6 +44,26 @@ pub fn line_height(font_size: f32) -> f32 {
 /// Glyph outlines of `string` with the first line's box at `origin` (y-down).
 /// Returns None for empty or whitespace-only text.
 pub fn path(string: &str, font_size: f32, origin: Point) -> Option<Path> {
+    path_styled(string, font_size, origin, &TextStyle::default())
+}
+
+/// Installed font families, sorted, without duplicates.
+pub fn families() -> Vec<String> {
+    let guard = fonts().lock().unwrap_or_else(|e| e.into_inner());
+    let mut names: Vec<String> = guard
+        .system
+        .db()
+        .faces()
+        .filter_map(|f| f.families.first().map(|(name, _)| name.clone()))
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup();
+    names
+}
+
+/// Like `path`, in the given family, weight and slant (falling back to the
+/// default family when that one isn't installed).
+pub fn path_styled(string: &str, font_size: f32, origin: Point, style: &TextStyle) -> Option<Path> {
     let mut guard = fonts().lock().unwrap_or_else(|e| e.into_inner());
     let Fonts { system, cache } = &mut *guard;
 
@@ -50,7 +73,21 @@ pub fn path(string: &str, font_size: f32, origin: Point) -> Option<Path> {
         let mut buffer = buffer.borrow_with(system);
         buffer.set_text(
             string,
-            &Attrs::new().family(family()),
+            &Attrs::new()
+                .family(match style.family.as_deref() {
+                    Some(name) => Family::Name(name),
+                    None => family(),
+                })
+                .weight(if style.bold {
+                    Weight::BOLD
+                } else {
+                    Weight::NORMAL
+                })
+                .style(if style.italic {
+                    Style::Italic
+                } else {
+                    Style::Normal
+                }),
             Shaping::Advanced,
             None,
         );

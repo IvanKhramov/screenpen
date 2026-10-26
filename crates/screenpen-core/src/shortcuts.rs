@@ -195,6 +195,11 @@ pub enum Action {
     Color(u8),
     Thinner,
     Thicker,
+    /// Text size, for the text being typed, the selected text or new text.
+    TextSmaller,
+    TextBigger,
+    Bold,
+    Italic,
     Clear,
     Undo,
     Redo,
@@ -237,6 +242,10 @@ impl Action {
                 let s = match other {
                     Action::Thinner => "thinner",
                     Action::Thicker => "thicker",
+                    Action::TextSmaller => "text_smaller",
+                    Action::TextBigger => "text_bigger",
+                    Action::Bold => "bold",
+                    Action::Italic => "italic",
                     Action::Clear => "clear",
                     Action::Undo => "undo",
                     Action::Redo => "redo",
@@ -311,6 +320,10 @@ impl Default for Shortcuts {
         b.extend([
             (Action::Thinner, key('[')),
             (Action::Thicker, key(']')),
+            (Action::TextSmaller, Some(Chord::ctrl(Char('-')))),
+            (Action::TextBigger, Some(Chord::ctrl(Char('=')))),
+            (Action::Bold, Some(Chord::ctrl(Char('B')))),
+            (Action::Italic, Some(Chord::ctrl(Char('I')))),
             (Action::Clear, key('C')),
             (Action::Undo, Some(Chord::ctrl(Char('Z')))),
             (Action::Redo, Some(Chord::ctrl_shift(Char('Z')))),
@@ -394,5 +407,27 @@ pub fn next_width(width: f32, thicker: bool) -> f32 {
             .copied()
             .find(|&w| w < width)
             .unwrap_or(WIDTH_STEPS[0])
+    }
+}
+
+/// Text size presets that TextSmaller and TextBigger step through.
+pub const TEXT_STEPS: [f32; 15] = [
+    12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 28.0, 32.0, 40.0, 48.0, 56.0, 64.0, 80.0, 96.0, 120.0,
+];
+
+pub fn next_text_size(size: f32, bigger: bool) -> f32 {
+    if bigger {
+        TEXT_STEPS
+            .iter()
+            .copied()
+            .find(|&s| s > size)
+            .unwrap_or(TEXT_STEPS[TEXT_STEPS.len() - 1])
+    } else {
+        TEXT_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|&s| s < size)
+            .unwrap_or(TEXT_STEPS[0])
     }
 }

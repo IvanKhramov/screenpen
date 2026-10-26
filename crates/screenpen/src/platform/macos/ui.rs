@@ -117,6 +117,8 @@ pub fn scale_at(mtm: MainThreadMarker, at: (f64, f64)) -> f32 {
 pub struct PaletteWindow {
     pub panel: Retained<OverlayPanel>,
     pub view: Retained<PixelView>,
+    /// The user's interface scale, multiplied into `scale`.
+    pub ui_scale: f32,
     pub scale: f32,
     /// Top-left corner.
     pub origin: (f64, f64),
@@ -136,6 +138,7 @@ impl PaletteWindow {
             panel,
             view,
             scale: 1.0,
+            ui_scale: 1.0,
             origin: (0.0, 0.0),
             palette,
             drag: None,
@@ -185,7 +188,7 @@ impl PaletteWindow {
 
     pub fn show(&mut self, look: &Look) {
         self.visible = true;
-        self.scale = scale_at(self.mtm(), self.center());
+        self.scale = scale_at(self.mtm(), self.center()) * self.ui_scale;
         self.render(look);
         self.panel.orderFrontRegardless();
     }
@@ -224,7 +227,7 @@ impl PaletteWindow {
             y = bottom - h - margin;
         }
         self.origin = (x, y);
-        self.scale = scale_at(self.mtm(), self.center());
+        self.scale = scale_at(self.mtm(), self.center()) * self.ui_scale;
         self.render(look);
     }
 

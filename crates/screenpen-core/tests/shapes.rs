@@ -1,7 +1,9 @@
 use screenpen_core::render::{Fill, bounds, hit_test, render_parts};
 use screenpen_core::shortcuts::{Action, Chord, Key, Shortcuts, next_width};
 use screenpen_core::tools::{shape_geometry, snap_angle};
-use screenpen_core::{Annotation, BadgeFormat, Geometry, Point, Rect, Rgba, Style, ToolKind};
+use screenpen_core::{
+    Annotation, BadgeFormat, Geometry, Point, Rect, Rgba, Style, TextStyle, ToolKind,
+};
 
 fn p(x: f32, y: f32) -> Point {
     Point::new(x, y)
@@ -106,6 +108,7 @@ fn text_box_starts_at_origin() {
         origin: p(10., 20.),
         string: "Hello\nWorld".into(),
         font_size: 20.0,
+        style: TextStyle::default(),
     });
     let b = bounds(&a).expect("system fonts are needed for text");
     assert!(b.x >= 10.0 && b.x < 14.0, "{b:?}");
@@ -162,6 +165,7 @@ fn translation_moves_every_kind() {
             origin: p(0., 0.),
             string: "Hi".into(),
             font_size: 14.0,
+            style: TextStyle::default(),
         },
         Geometry::Badge {
             center: p(0., 0.),
@@ -260,4 +264,26 @@ fn width_steps_clamp_at_ends() {
     assert_eq!(next_width(5.0, false), 4.0);
     assert_eq!(next_width(32.0, true), 32.0);
     assert_eq!(next_width(1.0, false), 1.0);
+}
+
+#[test]
+fn styled_text_has_plate_and_outline_and_reads_old_files() {
+    let style = TextStyle {
+        bold: true,
+        background: true,
+        outline: true,
+        ..TextStyle::default()
+    };
+    let a = annotation(Geometry::Text {
+        origin: p(10., 20.),
+        string: "Hi".into(),
+        font_size: 30.0,
+        style,
+    });
+    let fills: Vec<_> = render_parts(&a).iter().map(|p| p.fill).collect();
+    assert_eq!(fills, [Fill::Plate, Fill::Contrast, Fill::Style]);
+    // Text saved before styles existed has no `style` field.
+    let old = r#"{"kind":"text","origin":{"x":1.0,"y":2.0},"string":"x","font_size":12.0}"#;
+    let g: Geometry = serde_json::from_str(old).unwrap();
+    assert!(matches!(g, Geometry::Text { style, .. } if style == TextStyle::default()));
 }

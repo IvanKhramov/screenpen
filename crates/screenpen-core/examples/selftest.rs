@@ -3,7 +3,9 @@
 //! Exits non-zero if a kind renders nothing.
 
 use screenpen_core::render::{ChannelOrder, draw};
-use screenpen_core::{Annotation, BadgeFormat, Blend, Geometry, Point, Rect, Rgba, Style};
+use screenpen_core::{
+    Annotation, BadgeFormat, Blend, Geometry, Point, Rect, Rgba, Style, TextStyle,
+};
 use tiny_skia::{Color, Pixmap, Transform};
 
 fn p(x: f32, y: f32) -> Point {
@@ -104,8 +106,25 @@ fn main() {
                 origin: p(30., 300.),
                 string: "Привет, screenpen!\nSecond line".into(),
                 font_size: 24.0,
+                style: TextStyle::default(),
             },
             Style::new(Rgba::WHITE, 4.0),
+        ),
+        (
+            "styled text",
+            Geometry::Text {
+                origin: p(360., 330.),
+                string: "Bold italic".into(),
+                font_size: 22.0,
+                style: TextStyle {
+                    bold: true,
+                    italic: true,
+                    background: true,
+                    outline: true,
+                    family: None,
+                },
+            },
+            Style::new(Rgba::YELLOW, 4.0),
         ),
         (
             "badge",

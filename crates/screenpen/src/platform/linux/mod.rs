@@ -27,7 +27,7 @@ use tiny_skia::Pixmap;
 use tray::{Command, MenuState, Mode, Tray};
 use ui::{PaletteWindow, Popup};
 
-use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request};
+use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request, typing_action};
 use crate::config::{PaletteSettings, Settings};
 use crate::i18n::{Lang, T};
 use crate::palette::{Hit, Item, Look, Palette, render_cheat_sheet, render_tooltip};
@@ -384,6 +384,7 @@ fn load_settings(app: &mut App) {
         items
     };
     app.palette.palette.vertical = settings.palette.vertical;
+    app.palette.ui_scale = app.state.ui_scale;
     if let (Some(x), Some(y)) = (settings.palette.x, settings.palette.y) {
         app.palette.origin = (x, y);
         app.palette_placed = true;
@@ -560,6 +561,11 @@ fn show(app: &mut App) {
     app.active = true;
     app.ghost = false;
     app.display.set_click_through(false);
+    for o in &mut app.overlays {
+        if !o.canvas.wake() {
+            log("out of memory waking an overlay");
+        }
+    }
     refresh_all(app);
     for i in 0..app.overlays.len() {
         app.display.show(Win::Overlay(i));
@@ -578,8 +584,9 @@ fn hide(app: &mut App) {
     }
     for (i, o) in app.overlays.iter_mut().enumerate() {
         o.canvas.set_spotlight(false);
-        o.canvas.cancel();
         app.display.hide(Win::Overlay(i));
+        // Hidden overlays keep only their vector annotations.
+        o.canvas.sleep();
     }
     app.palette.hide(app.display.as_mut());
     app.sheet.hide(app.display.as_mut());
@@ -710,6 +717,8 @@ fn snapshot(app: &mut App, index: usize) {
 fn look(app: &App) -> Look {
     Look {
         tool: app.state.tool,
+        bold: app.state.text_style.bold,
+        italic: app.state.text_style.italic,
         spotlight: app
             .overlays
             .first()
@@ -883,7 +892,7 @@ fn toggle_sheet(app: &mut App, index: usize) {
     let Some(o) = app.overlays.get(index) else {
         return;
     };
-    let (area, scale) = (o.monitor.area, o.canvas.scale());
+    let (area, scale) = (o.monitor.area, o.canvas.scale() * app.state.ui_scale);
     let Some(pixmap) =
         render_cheat_sheet(app.lang, &app.state.shortcuts, scale, ChannelOrder::Bgra)
     else {
@@ -966,6 +975,9 @@ fn on_key(app: &mut App, win: Option<Win>, key: Option<Key>, mods: Mods, text: O
         return;
     }
     if app.overlays[index].canvas.is_typing() {
+        if let Some(action) = chord.and_then(|c| typing_action(&app.state.shortcuts, c)) {
+            return run_action(app, index, action);
+        }
         // While typing, letters are text; only Esc (finish) is a shortcut.
         let typed = match key {
             Some(Key::Escape) => return run_action(app, index, Action::Escape),

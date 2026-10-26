@@ -4,12 +4,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use screenpen_core::{Action, Chord, Rgba, ToolKind};
+use screenpen_core::{Action, Chord, Rgba, TextStyle, ToolKind};
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::Lang;
 use crate::palette::Item;
-use crate::state::ToolState;
+use crate::state::{ToolState, UI_SCALE};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -27,6 +27,16 @@ pub struct Settings {
     /// 0 turns auto-fade off.
     pub fade_seconds: f32,
     pub hide_palette_from_capture: bool,
+    /// Size of new text, in points.
+    pub text_size: f32,
+    /// Font family for text; empty is the system sans-serif.
+    pub font: String,
+    pub bold: bool,
+    pub italic: bool,
+    pub text_background: bool,
+    pub text_outline: bool,
+    /// Interface scale (palette, tooltips, cheat sheet, settings), 0.75..=2.
+    pub ui_scale: f32,
     pub palette: PaletteSettings,
     /// Action name to chord, e.g. "tool.pen" = "P". An empty string turns it off.
     pub shortcuts: BTreeMap<String, String>,
@@ -142,6 +152,13 @@ impl Settings {
             dim: state.dim,
             fade_seconds: state.auto_fade.unwrap_or(0.0),
             hide_palette_from_capture: hide_palette,
+            text_size: state.text_size,
+            font: state.text_style.family.clone().unwrap_or_default(),
+            bold: state.text_style.bold,
+            italic: state.text_style.italic,
+            text_background: state.text_style.background,
+            text_outline: state.text_style.outline,
+            ui_scale: state.ui_scale,
             palette: palette.clone(),
             shortcuts: state
                 .shortcuts
@@ -172,6 +189,20 @@ impl Settings {
         state.width = self.width.clamp(1.0, 64.0);
         state.dim = self.dim.clamp(0.0, 0.8);
         state.auto_fade = (self.fade_seconds > 0.0).then_some(self.fade_seconds);
+        state.text_size = self.text_size.clamp(8.0, 200.0);
+        state.text_style = TextStyle {
+            family: (!self.font.trim().is_empty()).then(|| self.font.trim().to_string()),
+            bold: self.bold,
+            italic: self.italic,
+            background: self.text_background,
+            outline: self.text_outline,
+        };
+        let (min, max, _) = UI_SCALE;
+        state.ui_scale = if self.ui_scale.is_finite() {
+            self.ui_scale.clamp(min, max)
+        } else {
+            1.0
+        };
         for (name, text) in &self.shortcuts {
             let Some(action) = Action::from_name(name) else {
                 problems.push(format!("shortcuts: unknown action {name:?}"));

@@ -97,6 +97,8 @@ pub fn scale_at(at: POINT) -> f32 {
 pub struct PaletteWindow {
     pub hwnd: HWND,
     surface: Option<Surface>,
+    /// The user's interface scale, multiplied into `scale`.
+    pub ui_scale: f32,
     pub scale: f32,
     pub origin: POINT,
     pub palette: Palette,
@@ -116,6 +118,7 @@ impl PaletteWindow {
             hwnd: create_window(class, ex, 1, 1),
             surface: None,
             scale: 1.0,
+            ui_scale: 1.0,
             origin: POINT { x: 0, y: 0 },
             palette,
             drag: None,
@@ -161,7 +164,7 @@ impl PaletteWindow {
 
     pub fn show(&mut self, look: &Look) {
         self.visible = true;
-        self.scale = scale_at(self.center());
+        self.scale = scale_at(self.center()) * self.ui_scale;
         self.render(look);
         unsafe {
             ShowWindow(self.hwnd, SW_SHOWNA);
@@ -217,7 +220,7 @@ impl PaletteWindow {
             y = area.bottom - h - margin;
         }
         self.origin = POINT { x, y };
-        let scale = scale_at(self.center());
+        let scale = scale_at(self.center()) * self.ui_scale;
         if scale != self.scale {
             self.scale = scale;
         }
@@ -227,7 +230,7 @@ impl PaletteWindow {
     /// Top center of the work area containing `at`.
     pub fn default_origin(&self, at: POINT) -> POINT {
         let area = work_area(at);
-        let scale = scale_at(at);
+        let scale = scale_at(at) * self.ui_scale;
         let (w, _) = self.palette.size_px(scale);
         POINT {
             x: area.left + (area.right - area.left - w as i32) / 2,

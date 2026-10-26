@@ -58,11 +58,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request};
+use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request, typing_action};
 use crate::config::{PaletteSettings, Settings};
 use crate::i18n::{Lang, T};
 use crate::palette::{Hit, Item, Look, Palette, render_cheat_sheet, render_tooltip};
-use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState};
+use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState, step_ui_scale};
 
 const PA_NOACTIVATE: LRESULT = 3; // WM_POINTERACTIVATE result
 const POINTER_FLAG_FIRSTBUTTON: usize = 0x0010; // HIWORD(wParam) of WM_POINTER*
@@ -79,7 +79,8 @@ const GLOBAL_ACTIONS: [(i32, Action); 3] = [
 struct Overlay {
     hwnd: HWND,
     monitor: RECT,
-    surface: Surface,
+    /// The window's pixels; only while drawing is on (see `Canvas::sleep`).
+    surface: Option<Surface>,
     canvas: Canvas,
     /// Cover the monitor's last pixel row too (only above a full-screen app).
     full_height: bool,
@@ -306,6 +307,7 @@ fn load_settings(app: &mut App) {
         items
     };
     app.palette.palette.vertical = settings.palette.vertical;
+    app.palette.ui_scale = app.state.ui_scale;
     if let (Some(x), Some(y)) = (settings.palette.x, settings.palette.y) {
         app.palette.origin = POINT { x, y };
         app.palette_placed = true;
@@ -482,13 +484,12 @@ fn create_overlays(state: &ToolState) -> Vec<Overlay> {
             w as i32,
             h as i32 - 1,
         );
-        let (Some(surface), Some(mut canvas)) = (
-            Surface::new(w, h),
-            Canvas::new(w, h, scale, ChannelOrder::Bgra),
-        ) else {
+        let Some(mut canvas) = Canvas::new(w, h, scale, ChannelOrder::Bgra) else {
             log("out of memory for an overlay");
             continue;
         };
+        // Drawing starts off: no full-screen buffers until it's turned on.
+        canvas.sleep();
         canvas.set_auto_fade(state.auto_fade);
         log(&format!(
             "overlay {hwnd:?} monitor {w}x{h} at ({}, {}) scale {scale}",
@@ -497,7 +498,7 @@ fn create_overlays(state: &ToolState) -> Vec<Overlay> {
         out.push(Overlay {
             hwnd,
             monitor: r,
-            surface,
+            surface: None,
             canvas,
             full_height: false,
         });
@@ -572,8 +573,17 @@ fn refresh_all(app: &mut App) {
     update_fade_timer(app);
 }
 
-fn paint(o: &mut Overlay, repaint: Repaint) {
-    let mut target = o.surface.pixmap();
+fn paint(o: &mut Overlay, mut repaint: Repaint) {
+    if o.surface.is_none() {
+        o.surface = Surface::new(o.canvas.width(), o.canvas.height());
+        // A new surface is empty: send all of it.
+        repaint = Repaint::Full;
+    }
+    let Some(surface) = &mut o.surface else {
+        log("out of memory for an overlay surface");
+        return;
+    };
+    let mut target = surface.pixmap();
     let changed = o.canvas.paint(&mut target, repaint);
     // A full repaint also resizes the window (the 1px-short trick), so it sends everything.
     let dirty = match (repaint, changed) {
@@ -586,11 +596,8 @@ fn paint(o: &mut Overlay, repaint: Repaint) {
             bottom: r.bottom(),
         }),
     };
-    let h = o.surface.height - if o.full_height { 0 } else { 1 };
-    if !o
-        .surface
-        .present(o.hwnd, o.monitor.left, o.monitor.top, h, dirty)
-    {
+    let h = surface.height - if o.full_height { 0 } else { 1 };
+    if !surface.present(o.hwnd, o.monitor.left, o.monitor.top, h, dirty) {
         log("UpdateLayeredWindowIndirect failed");
     }
 }
@@ -622,8 +629,11 @@ fn show(app: &mut App) {
 
 /// Shows every overlay and the palette in the current mode (drawing or ghost).
 fn reshow(app: &mut App) {
-    for o in &app.overlays {
+    for o in &mut app.overlays {
         set_click_through(o.hwnd, app.ghost);
+        if !o.canvas.wake() {
+            log("out of memory waking an overlay");
+        }
     }
     refresh_all(app);
     for o in &app.overlays {
@@ -675,8 +685,10 @@ fn hide(app: &mut App) {
         o.canvas.set_spotlight(false);
     }
     for o in &mut app.overlays {
-        o.canvas.cancel();
         unsafe { ShowWindow(o.hwnd, SW_HIDE) };
+        // Hidden overlays keep only their vector annotations.
+        o.canvas.sleep();
+        o.surface = None;
     }
     app.palette.hide();
     app.sheet.hide();
@@ -895,6 +907,8 @@ fn contains(r: RECT, p: POINT) -> bool {
 fn look(app: &App) -> Look {
     Look {
         tool: app.state.tool,
+        bold: app.state.text_style.bold,
+        italic: app.state.text_style.italic,
         spotlight: app
             .overlays
             .first()
@@ -1097,7 +1111,7 @@ fn toggle_sheet(app: &mut App, index: usize) {
     let Some(o) = app.overlays.get(index) else {
         return;
     };
-    let (monitor, scale) = (o.monitor, o.canvas.scale());
+    let (monitor, scale) = (o.monitor, o.canvas.scale() * app.state.ui_scale);
     let Some(pixmap) =
         render_cheat_sheet(app.lang, &app.state.shortcuts, scale, ChannelOrder::Bgra)
     else {
@@ -1172,6 +1186,10 @@ fn on_key(app: &mut App, index: usize, vk: u16) {
         return;
     }
     if typing {
+        if let Some(action) = typing_action(&app.state.shortcuts, chord) {
+            run_action(app, index, action);
+            return;
+        }
         // While typing, letters are text; only Esc (finish) is a shortcut.
         if chord.key == screenpen_core::Key::Escape {
             run_action(app, index, Action::Escape);
@@ -1366,23 +1384,39 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
         }),
         WM_POINTERWHEEL => with_app(|app| {
+            let (ctrl, _, _) = keys::modifiers();
+            let up = ((wparam >> 16) & 0xffff) as i16 > 0;
+            // Ctrl+wheel over the palette scales the interface.
+            if hwnd == app.palette.hwnd {
+                handled = Some(0);
+                if ctrl {
+                    app.state.ui_scale = step_ui_scale(app.state.ui_scale, up);
+                    app.palette.ui_scale = app.state.ui_scale;
+                    app.palette.tooltip.hide();
+                    let (origin, look) = (app.palette.origin, look(app));
+                    app.palette.move_to(origin, &look);
+                    save_settings(app);
+                }
+                return;
+            }
             let Some(index) = app.overlays.iter().position(|o| o.hwnd == hwnd) else {
                 return;
             };
             handled = Some(0);
-            let (ctrl, _, _) = keys::modifiers();
-            let delta = ((wparam >> 16) & 0xffff) as i16;
             if !ctrl && app.overlays[index].canvas.spotlight_on() {
                 let o = &mut app.overlays[index];
-                o.canvas.resize_spotlight(delta > 0);
+                o.canvas.resize_spotlight(up);
                 paint(o, Repaint::Full);
-            } else if ctrl {
-                let delta = ((wparam >> 16) & 0xffff) as i16;
-                let action = if delta > 0 {
-                    Action::Thicker
+            } else if ctrl && app.overlays[index].canvas.is_typing() {
+                // While typing, Ctrl+wheel sizes the text.
+                let action = if up {
+                    Action::TextBigger
                 } else {
-                    Action::Thinner
+                    Action::TextSmaller
                 };
+                run_action(app, index, action);
+            } else if ctrl {
+                let action = if up { Action::Thicker } else { Action::Thinner };
                 run_action(app, index, action);
             }
         }),

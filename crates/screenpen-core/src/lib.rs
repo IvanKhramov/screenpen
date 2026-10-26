@@ -13,7 +13,7 @@ pub mod style;
 pub mod text;
 pub mod tools;
 
-pub use annotation::{Annotation, AnnotationId, AnnotationKind, BadgeFormat, Geometry};
+pub use annotation::{Annotation, AnnotationId, AnnotationKind, BadgeFormat, Geometry, TextStyle};
 pub use document::Document;
 pub use geom::{Point, Rect};
 pub use pressure::PressureFilter;

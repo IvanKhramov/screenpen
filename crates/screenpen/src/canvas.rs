@@ -12,10 +12,11 @@ use std::collections::HashSet;
 
 use screenpen_core::annotation::{AnnotationId, now};
 use screenpen_core::render::{ChannelOrder, bounds, draw, hit_test, segment_outline, skia_color};
+use screenpen_core::shortcuts::next_text_size;
 use screenpen_core::tools::shape_geometry;
 use screenpen_core::{
     Action, Annotation, AnnotationKind, BadgeFormat, Document, Geometry, Point, PressureFilter,
-    Rect, Rgba, StrokeBuilder, Style, ToolKind,
+    Rect, Rgba, StrokeBuilder, Style, TextStyle, ToolKind,
 };
 use tiny_skia::{
     FillRule, IntRect, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint,
@@ -134,9 +135,27 @@ struct TextEdit {
     origin: Point,
     string: String,
     font_size: f32,
+    style: TextStyle,
     color: Rgba,
     /// The annotation being edited, hidden from the cache meanwhile.
     editing: Option<AnnotationId>,
+}
+
+/// The shortcuts that still work while typing: text size and style with Ctrl or Alt
+/// (letters without them are text).
+pub fn typing_action(
+    shortcuts: &screenpen_core::Shortcuts,
+    chord: screenpen_core::Chord,
+) -> Option<Action> {
+    if !chord.ctrl && !chord.alt {
+        return None;
+    }
+    shortcuts.local_action(chord).filter(|a| {
+        matches!(
+            a,
+            Action::TextSmaller | Action::TextBigger | Action::Bold | Action::Italic
+        )
+    })
 }
 
 /// Auto-fade: how long the fade-out itself takes.
@@ -147,8 +166,14 @@ pub struct Canvas {
     pub doc: Document,
     scale: f32,
     order: ChannelOrder,
+    /// Background and committed annotations; 1x1 while asleep.
     cache: Pixmap,
-    live: Pixmap,
+    width: u32,
+    height: u32,
+    /// Hidden: the full-size buffers are freed until `wake`.
+    asleep: bool,
+    /// The stroke in progress; allocated only during a freehand gesture.
+    live: Option<Pixmap>,
     live_color: Rgba,
     live_opacity: f32,
     /// Pixel bounds of everything drawn in `live` since the gesture began.
@@ -176,7 +201,10 @@ impl Canvas {
             scale,
             order,
             cache: Pixmap::new(width, height)?,
-            live: Pixmap::new(width, height)?,
+            width,
+            height,
+            asleep: false,
+            live: None,
             live_color: Rgba::RED,
             live_opacity: 1.0,
             live_bounds: None,
@@ -194,11 +222,35 @@ impl Canvas {
     }
 
     pub fn width(&self) -> u32 {
-        self.cache.width()
+        self.width
     }
 
     pub fn height(&self) -> u32 {
-        self.cache.height()
+        self.height
+    }
+
+    /// Frees the full-size buffers while drawing is off; the annotations stay.
+    pub fn sleep(&mut self) {
+        self.cancel();
+        if let Some(tiny) = Pixmap::new(1, 1) {
+            self.cache = tiny;
+        }
+        self.live = None;
+        self.asleep = true;
+    }
+
+    /// Allocates the buffers again and redraws the annotations into them.
+    /// Returns false when the memory isn't there.
+    pub fn wake(&mut self) -> bool {
+        if self.asleep {
+            let Some(cache) = Pixmap::new(self.width, self.height) else {
+                return false;
+            };
+            self.cache = cache;
+            self.asleep = false;
+            self.rebuild_cache();
+        }
+        true
     }
 
     pub fn scale(&self) -> f32 {
@@ -266,6 +318,9 @@ impl Canvas {
     }
 
     pub fn rebuild_cache(&mut self) {
+        if self.asleep {
+            return;
+        }
         let hidden = self.hidden();
         let at = now();
         let transform = self.transform();
@@ -313,7 +368,9 @@ impl Canvas {
     /// Adds a committed annotation on top of the cache without a full rebuild.
     fn commit(&mut self, a: Annotation) -> Repaint {
         let transform = self.transform();
-        draw(&mut self.cache.as_mut(), &a, transform, self.order);
+        if !self.asleep {
+            draw(&mut self.cache.as_mut(), &a, transform, self.order);
+        }
         let repaint = bounds(&a).map_or(Repaint::Full, |b| Repaint::Rect(self.to_pixels(b)));
         self.doc.insert(a);
         repaint
@@ -376,6 +433,9 @@ impl Canvas {
     /// Brings `target` up to date in the given region (or everywhere).
     /// Returns the pixel rectangle that changed, if any.
     pub fn paint(&mut self, target: &mut PixmapMut, repaint: Repaint) -> Option<IntRect> {
+        if self.asleep {
+            return None;
+        }
         let overlay = self.overlay_bounds();
         let region = match repaint.union(self.painted_overlay.map_or(Repaint::None, Repaint::Rect))
         {
@@ -392,7 +452,7 @@ impl Canvas {
         if let Some(lb) = self.live_bounds
             && let Some(live_rect) = clip(lb, self.width(), self.height())
             && let Some(both) = rect.intersect(&live_rect)
-            && let Some(part) = self.live.clone_rect(both)
+            && let Some(part) = self.live.as_ref().and_then(|live| live.clone_rect(both))
         {
             let paint = PixmapPaint {
                 opacity: self.live_opacity,
@@ -977,20 +1037,23 @@ impl Canvas {
         };
         paint.set_color(skia_color(self.live_color, self.order));
         let t = self.transform();
-        self.live
-            .fill_path(&path, &paint, FillRule::Winding, t, None);
+        if self.live.is_none() {
+            self.live = Pixmap::new(self.width, self.height);
+        }
+        let Some(live) = &mut self.live else {
+            return Repaint::None;
+        };
+        live.fill_path(&path, &paint, FillRule::Winding, t, None);
         let b = path.bounds();
         let px = self.to_pixels(Rect::from_skia(b)).inset(-2.0);
         self.live_bounds = Some(self.live_bounds.map_or(px, |r| r.union(px)));
         Repaint::Rect(px)
     }
 
+    /// The live layer is only needed during a stroke; a fresh one is zeroed anyway.
     fn clear_live(&mut self) {
-        if let Some(r) = self.live_bounds.take()
-            && let Some(rect) = clip(r, self.width(), self.height())
-        {
-            clear_rect(&mut self.live, rect);
-        }
+        self.live_bounds = None;
+        self.live = None;
     }
 
     // MARK: text
@@ -1016,6 +1079,7 @@ impl Canvas {
             origin,
             string: String::new(),
             font_size,
+            style: state.text_style.clone(),
             color: state.color(),
             editing: None,
         });
@@ -1027,6 +1091,7 @@ impl Canvas {
             origin,
             string,
             font_size,
+            style,
         } = &a.geometry
         else {
             return Repaint::None;
@@ -1036,6 +1101,7 @@ impl Canvas {
             origin: *origin,
             string: string.clone(),
             font_size: *font_size,
+            style: style.clone(),
             color: a.style.color,
             editing: Some(a.id),
         });
@@ -1050,6 +1116,7 @@ impl Canvas {
                 origin: t.origin,
                 string: t.string.clone(),
                 font_size: t.font_size,
+                style: t.style.clone(),
             },
             Style::new(t.color, 2.0),
         ))
@@ -1061,6 +1128,7 @@ impl Canvas {
             origin,
             string,
             font_size,
+            style,
         } = &a.geometry
         else {
             return Rect::default();
@@ -1070,7 +1138,7 @@ impl Canvas {
         let last = string.rsplit('\n').next().unwrap_or("");
         // Glyph bounds ignore trailing spaces, so add roughly a space width for each.
         let trailing = (last.len() - last.trim_end().len()) as f32 * font_size * 0.28;
-        let ink = screenpen_core::text::path(last.trim_end(), *font_size, *origin)
+        let ink = screenpen_core::text::path_styled(last.trim_end(), *font_size, *origin, style)
             .map_or(origin.x, |p| p.bounds().right() + 1.0);
         let x = ink + trailing;
         Rect::new(
@@ -1107,6 +1175,7 @@ impl Canvas {
             origin: t.origin,
             string: string.clone(),
             font_size: t.font_size,
+            style: t.style.clone(),
         };
         match t.editing {
             Some(id) if string.is_empty() => self.doc.remove(&HashSet::from([id])),
@@ -1173,6 +1242,24 @@ impl Canvas {
                     (full(self), None)
                 }
             }
+            Action::TextSmaller | Action::TextBigger => {
+                let bigger = action == Action::TextBigger;
+                self.restyle_text(
+                    state,
+                    |size, _| *size = next_text_size(*size, bigger),
+                    |s| s.step_text_size(bigger),
+                )
+            }
+            Action::Bold => self.restyle_text(
+                state,
+                |_, style| style.bold = !style.bold,
+                |s| s.text_style.bold = !s.text_style.bold,
+            ),
+            Action::Italic => self.restyle_text(
+                state,
+                |_, style| style.italic = !style.italic,
+                |s| s.text_style.italic = !s.text_style.italic,
+            ),
             Action::Thinner | Action::Thicker => {
                 state.step_width(action == Action::Thicker);
                 (Repaint::None, Some(Request::StateChanged))
@@ -1230,6 +1317,41 @@ impl Canvas {
         }
     }
 
+    /// Applies a size or style change to the text being typed, else to the selected
+    /// text, else to the defaults for new text.
+    fn restyle_text(
+        &mut self,
+        state: &mut ToolState,
+        change: impl Fn(&mut f32, &mut TextStyle),
+        default: impl FnOnce(&mut ToolState),
+    ) -> (Repaint, Option<Request>) {
+        if let Some(t) = &mut self.text {
+            change(&mut t.font_size, &mut t.style);
+            return (Repaint::None, None);
+        }
+        let texts: HashSet<AnnotationId> = self
+            .doc
+            .annotations()
+            .iter()
+            .filter(|a| self.selection.contains(&a.id) && a.kind() == AnnotationKind::Text)
+            .map(|a| a.id)
+            .collect();
+        if !texts.is_empty() {
+            self.doc.update(&texts, |a| {
+                if let Geometry::Text {
+                    font_size, style, ..
+                } = &mut a.geometry
+                {
+                    change(font_size, style);
+                }
+            });
+            self.rebuild_cache();
+            return (Repaint::Full, None);
+        }
+        default(state);
+        (Repaint::None, Some(Request::StateChanged))
+    }
+
     fn prune_selection(&mut self) {
         let ids: HashSet<_> = self.doc.annotations().iter().map(|a| a.id).collect();
         self.selection.retain(|id| ids.contains(id));
@@ -1264,16 +1386,6 @@ fn copy_rect(src: &Pixmap, dst: &mut PixmapMut, rect: IntRect) {
     for row in rect.y() as usize..rect.y() as usize + rect.height() as usize {
         let at = row * stride + x;
         dst[at..at + w].copy_from_slice(&src[at..at + w]);
-    }
-}
-
-fn clear_rect(pixmap: &mut Pixmap, rect: IntRect) {
-    let stride = pixmap.width() as usize * 4;
-    let (x, w) = (rect.x() as usize * 4, rect.width() as usize * 4);
-    let data = pixmap.data_mut();
-    for row in rect.y() as usize..rect.y() as usize + rect.height() as usize {
-        let at = row * stride + x;
-        data[at..at + w].fill(0);
     }
 }
 
@@ -1607,5 +1719,37 @@ mod tests {
         // Frozen: the backdrop wins over a fresh capture.
         c.set_backdrop(Some(screen));
         assert!(c.compose(None).unwrap().pixel(150, 250).unwrap().blue() > 200);
+    }
+}
+
+#[cfg(test)]
+mod sleep_tests {
+    use super::*;
+
+    #[test]
+    fn sleeping_frees_buffers_and_waking_redraws() {
+        let mut c = Canvas::new(400, 300, 1.0, ChannelOrder::Rgba).unwrap();
+        let state = ToolState::default();
+        let p = |x, y| Pointer {
+            x,
+            y,
+            pressure: 1.0,
+            mods: Mods::default(),
+            double_click: false,
+        };
+        c.pointer_down(&state, p(10.0, 10.0), Button::Left);
+        c.pointer_move(&state, p(200.0, 100.0));
+        c.pointer_up(&state, p(200.0, 100.0));
+        assert!(c.live.is_none(), "the live layer goes after the stroke");
+        c.sleep();
+        assert_eq!(c.cache.width(), 1);
+        let mut target = Pixmap::new(400, 300).unwrap();
+        assert_eq!(c.paint(&mut target.as_mut(), Repaint::Full), None);
+        assert!(c.wake());
+        c.paint(&mut target.as_mut(), Repaint::Full);
+        assert!(
+            target.pixel(105, 55).unwrap().alpha() > 200,
+            "the stroke is back"
+        );
     }
 }

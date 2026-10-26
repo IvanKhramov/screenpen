@@ -37,7 +37,7 @@ use screenpen_core::render::ChannelOrder;
 use screenpen_core::{Action, Key, Rgba, ToolKind};
 use tiny_skia::Pixmap;
 
-use crate::canvas::{Button, Canvas, Pointer, Repaint, Request};
+use crate::canvas::{Button, Canvas, Pointer, Repaint, Request, typing_action};
 use crate::config::{PaletteSettings, Settings};
 use crate::i18n::{Lang, T};
 use crate::palette::{Hit, Item, Look, Palette, render_cheat_sheet, render_tooltip};
@@ -346,6 +346,7 @@ fn load_settings(app: &mut App) {
         items
     };
     app.palette.palette.vertical = settings.palette.vertical;
+    app.palette.ui_scale = app.state.ui_scale;
     if let (Some(x), Some(y)) = (settings.palette.x, settings.palette.y) {
         app.palette.origin = (x as f64, y as f64);
         app.palette_placed = true;
@@ -608,8 +609,11 @@ fn show(app: &mut App) {
     load_settings(app);
     app.active = true;
     app.ghost = false;
-    for o in &app.overlays {
+    for o in &mut app.overlays {
         o.panel.setIgnoresMouseEvents(false);
+        if !o.canvas.wake() {
+            log("out of memory waking an overlay");
+        }
     }
     refresh_all(app);
     for o in &app.overlays {
@@ -631,9 +635,10 @@ fn hide(app: &mut App) {
         o.canvas.set_spotlight(false);
     }
     for o in &mut app.overlays {
-        o.canvas.cancel();
         // Ordering out the key panel hands the keyboard back to the active app.
         o.panel.orderOut(None);
+        // Hidden overlays keep only their vector annotations.
+        o.canvas.sleep();
     }
     app.palette.hide();
     app.sheet.hide();
@@ -793,6 +798,8 @@ fn snapshot(app: &mut App, index: usize) {
 fn look(app: &App) -> Look {
     Look {
         tool: app.state.tool,
+        bold: app.state.text_style.bold,
+        italic: app.state.text_style.italic,
         spotlight: app
             .overlays
             .first()
@@ -960,7 +967,7 @@ fn toggle_sheet(app: &mut App, index: usize) {
     let Some(o) = app.overlays.get(index) else {
         return;
     };
-    let (frame, scale) = (o.frame, o.canvas.scale());
+    let (frame, scale) = (o.frame, o.canvas.scale() * app.state.ui_scale);
     let Some(pixmap) =
         render_cheat_sheet(app.lang, &app.state.shortcuts, scale, ChannelOrder::Rgba)
     else {
@@ -1034,6 +1041,10 @@ fn on_key(app: &mut App, index: usize, event: &NSEvent) {
         return;
     }
     if app.overlays[index].canvas.is_typing() {
+        if let Some(action) = chord.and_then(|c| typing_action(&app.state.shortcuts, c)) {
+            run_action(app, index, action);
+            return;
+        }
         // While typing, keys are text; only Esc (finish) is a shortcut.
         if escape {
             run_action(app, index, Action::Escape);

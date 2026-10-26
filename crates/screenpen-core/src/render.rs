@@ -16,8 +16,11 @@ use crate::text;
 pub enum Fill {
     /// The annotation's style color.
     Style,
-    /// Black or white, whichever reads better on the style color (badge numbers).
+    /// Black or white, whichever reads better on the style color (badge numbers,
+    /// text outlines).
     Contrast,
+    /// The contrast color, translucent: the plate behind text.
+    Plate,
 }
 
 #[derive(Clone, Debug)]
@@ -205,9 +208,39 @@ pub fn render_parts(a: &Annotation) -> Vec<RenderPart> {
             origin,
             string,
             font_size,
-        } => style(text::path(string, *font_size, *origin))
-            .into_iter()
-            .collect(),
+            style: text_style,
+        } => {
+            let Some(glyphs) = text::path_styled(string, *font_size, *origin, text_style) else {
+                return Vec::new();
+            };
+            let mut parts = Vec::new();
+            if text_style.background {
+                let pad = font_size * 0.25;
+                let plate = rounded_rect(
+                    Rect::from_skia(glyphs.bounds()).inset(-pad),
+                    font_size * 0.2,
+                );
+                if let Some(path) = plate {
+                    parts.push(RenderPart {
+                        path,
+                        fill: Fill::Plate,
+                    });
+                }
+            }
+            if text_style.outline
+                && let Some(path) = stroked(&glyphs, font_size * 0.12)
+            {
+                parts.push(RenderPart {
+                    path,
+                    fill: Fill::Contrast,
+                });
+            }
+            parts.push(RenderPart {
+                path: glyphs,
+                fill: Fill::Style,
+            });
+            parts
+        }
         Geometry::Badge {
             center,
             number,
@@ -264,6 +297,7 @@ pub fn draw(pixmap: &mut PixmapMut, a: &Annotation, transform: Transform, order:
         let color = match fill {
             Fill::Style => a.style.color,
             Fill::Contrast => a.style.color.contrasting(),
+            Fill::Plate => a.style.color.contrasting().with_alpha(0.55),
         };
         let mut paint = Paint {
             anti_alias: true,

@@ -32,6 +32,8 @@ They are stored in `%APPDATA%\screenpen\settings.toml`.
 | E · V · K | Eraser · Select · Laser pointer |
 | 1-9 | Color (recolors the selection when one exists) |
 | `[` · `]` · Ctrl+wheel | Thinner · Thicker |
+| Ctrl+- · Ctrl+= | Smaller · bigger text (while typing also Ctrl+wheel) |
+| Ctrl+B · Ctrl+I | Bold · italic text |
 | C | Clear |
 | Ctrl+Z · Ctrl+Shift+Z | Undo · Redo |
 | Ctrl+A · Ctrl+] · Delete | Select all · Bring to front · Delete the selection |

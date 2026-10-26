@@ -5,12 +5,12 @@
 use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, RichText};
-use screenpen_core::{Action, Chord, Key, Rgba, Shortcuts};
+use screenpen_core::{Action, Chord, Key, Rgba, Shortcuts, TextStyle};
 
 use crate::config::{Settings, default_path, parse_hex};
 use crate::i18n::Lang;
 use crate::palette::{Item, chord_label};
-use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState};
+use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState, UI_SCALE, step_ui_scale};
 
 pub const TITLE: &str = "screenpen settings";
 
@@ -18,7 +18,7 @@ pub fn run() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
-            .with_inner_size([720.0, 640.0])
+            .with_inner_size([860.0, 700.0])
             .with_min_inner_size([560.0, 420.0]),
         ..Default::default()
     };
@@ -35,6 +35,7 @@ pub fn run() {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     General,
+    Text,
     Shortcuts,
     Palette,
 }
@@ -50,6 +51,11 @@ struct SettingsApp {
     /// SCREENPEN_SETTINGS_SHOT=<dir>: save a PNG of each tab and quit (for checking
     /// the layout without a person at the screen).
     shot: Option<(PathBuf, u32)>,
+    /// Installed font families, read on first use (it takes a moment).
+    families: Option<Vec<String>>,
+    font_filter: String,
+    /// The text preview and what it was rendered for.
+    preview: Option<(String, egui::TextureHandle)>,
     /// Modification time of the file as last read or written.
     loaded: Option<std::time::SystemTime>,
     checked: std::time::Instant,
@@ -66,6 +72,9 @@ struct Edited {
     shortcuts: Shortcuts,
     items: Vec<String>,
     vertical: bool,
+    text_size: f32,
+    text_style: TextStyle,
+    ui_scale: f32,
 }
 
 fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
@@ -94,6 +103,9 @@ impl SettingsApp {
             status,
             shot: std::env::var_os("SCREENPEN_SETTINGS_SHOT").map(|dir| (PathBuf::from(dir), 0)),
             loaded,
+            families: None,
+            font_filter: String::new(),
+            preview: None,
             checked: std::time::Instant::now(),
         }
     }
@@ -114,6 +126,9 @@ impl SettingsApp {
             shortcuts: self.state.shortcuts.clone(),
             items: self.settings.palette.items.clone(),
             vertical: self.settings.palette.vertical,
+            text_size: self.state.text_size,
+            text_style: self.state.text_style.clone(),
+            ui_scale: self.state.ui_scale,
         }
     }
 
@@ -158,6 +173,15 @@ impl SettingsApp {
         }
         if now.vertical != before.vertical {
             disk.palette.vertical = now.vertical;
+        }
+        if now.text_size != before.text_size {
+            state.text_size = now.text_size;
+        }
+        if now.text_style != before.text_style {
+            state.text_style = now.text_style.clone();
+        }
+        if now.ui_scale != before.ui_scale {
+            state.ui_scale = now.ui_scale;
         }
         let settings = Settings::capture(
             &state,
@@ -209,6 +233,9 @@ impl eframe::App for SettingsApp {
 impl SettingsApp {
     fn draw(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang();
+        if ui.ctx().zoom_factor() != self.state.ui_scale {
+            ui.ctx().set_zoom_factor(self.state.ui_scale);
+        }
         self.take_shot(ui);
         if self.recording.is_some() {
             self.record_chord(ui);
@@ -217,6 +244,7 @@ impl SettingsApp {
             ui.horizontal(|ui| {
                 for (tab, en, ru) in [
                     (Tab::General, "General", "Общие"),
+                    (Tab::Text, "Text", "Текст"),
                     (Tab::Shortcuts, "Shortcuts", "Горячие клавиши"),
                     (Tab::Palette, "Palette", "Палитра"),
                 ] {
@@ -238,6 +266,7 @@ impl SettingsApp {
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
                 Tab::General => self.general(ui, lang),
+                Tab::Text => self.text(ui, lang),
                 Tab::Shortcuts => self.shortcuts(ui, lang),
                 Tab::Palette => self.palette(ui, lang),
             });
@@ -251,7 +280,7 @@ impl SettingsApp {
             return;
         };
         *frame += 1;
-        let tabs = [Tab::General, Tab::Shortcuts, Tab::Palette];
+        let tabs = [Tab::General, Tab::Text, Tab::Shortcuts, Tab::Palette];
         let index = (*frame / 10) as usize;
         ui.ctx().request_repaint();
         let Some(&tab) = tabs.get(index) else {
@@ -312,7 +341,7 @@ impl SettingsApp {
                 ui.end_row();
 
                 ui.label(tr(lang, "Colors (keys 1-9)", "Цвета (клавиши 1-9)"));
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for color in self.state.colors.iter_mut() {
                         let mut rgb = to_rgb(*color);
                         if ui.color_edit_button_srgb(&mut rgb).changed() {
@@ -388,12 +417,163 @@ impl SettingsApp {
                     )
                     .changed();
                 ui.end_row();
+
+                ui.label(tr(lang, "Interface scale", "Масштаб интерфейса"));
+                ui.horizontal(|ui| {
+                    let (min, max, _) = UI_SCALE;
+                    if ui.small_button("−").clicked() {
+                        self.state.ui_scale = step_ui_scale(self.state.ui_scale, false);
+                    }
+                    let mut percent = (self.state.ui_scale * 100.0).round();
+                    let slider = egui::Slider::new(&mut percent, min * 100.0..=max * 100.0).step_by(5.0).suffix("%");
+                    if ui.add(slider).changed() {
+                        self.state.ui_scale = percent / 100.0;
+                    }
+                    if ui.small_button("+").clicked() {
+                        self.state.ui_scale = step_ui_scale(self.state.ui_scale, true);
+                    }
+                })
+                .response
+                .on_hover_text(tr(
+                    lang,
+                    "Palette, tooltips, cheat sheet and this window. Ctrl+wheel over the palette changes it too.",
+                    "Палитра, подсказки, шпаргалка и это окно. Ещё меняется Ctrl+колесом над палитрой.",
+                ));
+                ui.end_row();
             });
         ui.add_space(16.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new(self.path.display().to_string()).weak());
         });
         if changed {}
+    }
+}
+
+// MARK: text
+
+impl SettingsApp {
+    fn text(&mut self, ui: &mut egui::Ui, lang: Lang) {
+        let system = tr(lang, "System font", "Системный шрифт");
+        egui::Grid::new("text")
+            .num_columns(2)
+            .spacing([24.0, 12.0])
+            .show(ui, |ui| {
+                ui.label(tr(lang, "Font", "Шрифт"));
+                let current = self.state.text_style.family.clone();
+                egui::ComboBox::from_id_salt("font")
+                    .selected_text(current.as_deref().unwrap_or(system))
+                    .width(260.0)
+                    .height(360.0)
+                    .show_ui(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.font_filter)
+                                .hint_text(tr(lang, "Search…", "Поиск…"))
+                                .desired_width(240.0),
+                        );
+                        if ui.selectable_label(current.is_none(), system).clicked() {
+                            self.state.text_style.family = None;
+                        }
+                        let filter = self.font_filter.to_lowercase();
+                        let families = self
+                            .families
+                            .get_or_insert_with(screenpen_core::text::families);
+                        for family in families
+                            .iter()
+                            .filter(|f| f.to_lowercase().contains(&filter))
+                        {
+                            if ui
+                                .selectable_label(current.as_deref() == Some(family), family)
+                                .clicked()
+                            {
+                                self.state.text_style.family = Some(family.clone());
+                            }
+                        }
+                    });
+                ui.end_row();
+
+                ui.label(tr(lang, "Size", "Размер"));
+                ui.add(
+                    egui::Slider::new(&mut self.state.text_size, 8.0..=200.0)
+                        .logarithmic(true)
+                        .step_by(1.0)
+                        .suffix(" pt"),
+                );
+                ui.end_row();
+
+                ui.label(tr(lang, "Style", "Начертание"));
+                ui.horizontal(|ui| {
+                    let style = &mut self.state.text_style;
+                    ui.checkbox(&mut style.bold, tr(lang, "Bold", "Жирный"));
+                    ui.checkbox(&mut style.italic, tr(lang, "Italic", "Курсив"));
+                    ui.checkbox(
+                        &mut style.background,
+                        tr(lang, "Background plate", "Подложка"),
+                    );
+                    ui.checkbox(&mut style.outline, tr(lang, "Outline", "Контур"));
+                });
+                ui.end_row();
+            });
+        ui.add_space(16.0);
+        ui.label(
+            RichText::new(tr(
+                lang,
+                "New text uses these. While typing: Ctrl+wheel, Ctrl+= and Ctrl+- change the size, Ctrl+B and Ctrl+I bold and italic. With text selected, the same keys change it.",
+                "Так выглядит новый текст. При наборе Ctrl+колесо, Ctrl+= и Ctrl+- меняют размер, Ctrl+B и Ctrl+I жирный и курсив. Если текст выделен, те же клавиши меняют его.",
+            ))
+            .weak(),
+        );
+        ui.add_space(12.0);
+        self.preview(ui, lang);
+    }
+
+    /// The sample text rendered by the same code that draws annotations.
+    fn preview(&mut self, ui: &mut egui::Ui, lang: Lang) {
+        let sample = tr(lang, "Screenpen text 123", "Текст screenpen 123");
+        let color = self.state.color();
+        let key = format!(
+            "{sample}|{}|{:?}|{:?}",
+            self.state.text_size, self.state.text_style, color
+        );
+        if self.preview.as_ref().is_none_or(|(k, _)| *k != key) {
+            let pixels_per_point = ui.ctx().pixels_per_point();
+            let annotation = screenpen_core::Annotation::new(
+                screenpen_core::Geometry::Text {
+                    origin: screenpen_core::Point::new(12.0, 12.0),
+                    string: sample.to_string(),
+                    font_size: self.state.text_size,
+                    style: self.state.text_style.clone(),
+                },
+                screenpen_core::Style::new(color, 2.0),
+            );
+            let bounds = screenpen_core::render::bounds(&annotation)
+                .unwrap_or(screenpen_core::Rect::new(0.0, 0.0, 100.0, 40.0));
+            let (w, h) = (bounds.right() + 12.0, bounds.bottom() + 12.0);
+            let scale = pixels_per_point;
+            let Some(mut pixmap) =
+                tiny_skia::Pixmap::new((w * scale).ceil() as u32, (h * scale).ceil() as u32)
+            else {
+                return;
+            };
+            pixmap.fill(tiny_skia::Color::from_rgba8(0x3a, 0x3a, 0x3c, 255));
+            screenpen_core::render::draw(
+                &mut pixmap.as_mut(),
+                &annotation,
+                tiny_skia::Transform::from_scale(scale, scale),
+                screenpen_core::render::ChannelOrder::Rgba,
+            );
+            let image = egui::ColorImage::from_rgba_premultiplied(
+                [pixmap.width() as usize, pixmap.height() as usize],
+                pixmap.data(),
+            );
+            let texture =
+                ui.ctx()
+                    .load_texture("text-preview", image, egui::TextureOptions::LINEAR);
+            self.preview = Some((key, texture));
+        }
+        if let Some((_, texture)) = &self.preview {
+            let size = texture.size_vec2() / ui.ctx().pixels_per_point();
+            ui.image((texture.id(), size));
+        }
     }
 }
 
