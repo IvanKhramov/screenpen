@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/screenpen-core", "crates/screenpen"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/IvanKhramov/screenpen"
+
+[workspace.dependencies]
+screenpen-core = { path = "crates/screenpen-core" }
+tiny-skia = "0.12"

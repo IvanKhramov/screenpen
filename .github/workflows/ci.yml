@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo test --workspace
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo clippy -p screenpen -- -D warnings
+      - run: cargo build --release -p screenpen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenpen-windows-x64
+          path: target/release/screenpen.exe
