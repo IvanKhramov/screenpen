@@ -28,6 +28,8 @@ use crate::state::{DIM_LEVELS, FADE_SECONDS};
 pub const WM_TRAY: u32 = WM_APP + 1;
 /// Posted by a second instance so the running one can say it's already there.
 pub const WM_SECOND_INSTANCE: u32 = WM_APP + 2;
+/// Posted by a newer version that is taking over: quit.
+pub const WM_QUIT_REQUEST: u32 = WM_APP + 3;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
@@ -50,6 +52,7 @@ pub enum Command {
 
 /// What the menu shows checked.
 pub struct MenuState {
+    pub version: String,
     pub mode: Mode,
     pub whiteboard: bool,
     pub hide_from_capture: bool,
@@ -110,6 +113,8 @@ impl Tray {
                 AppendMenuW(menu, flags, id, text.as_ptr());
             };
             let menu = CreatePopupMenu();
+            add(menu, MF_STRING | MF_GRAYED, 0, &m.version);
+            AppendMenuW(menu, MF_SEPARATOR, 0, null());
             add(
                 menu,
                 MF_STRING | check(m.mode != Mode::Idle),

@@ -3,6 +3,7 @@
 //! forwarding to the previous foreground window, the palette and the tray icon.
 //! Diagnostics go to %TEMP%\screenpen.log.
 
+mod instance;
 mod keys;
 mod surface;
 mod tray;
@@ -16,16 +17,13 @@ use screenpen_core::render::ChannelOrder;
 use screenpen_core::{Action, Rgba, ToolKind};
 use surface::{Surface, bgra};
 use tiny_skia::{Paint, Rect, Transform};
-use tray::{Command, MenuState, Mode, Tray, WM_SECOND_INSTANCE, WM_TRAY};
-use windows_sys::Win32::Foundation::{
-    ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
-};
+use tray::{Command, MenuState, Mode, Tray, WM_QUIT_REQUEST, WM_SECOND_INSTANCE, WM_TRAY};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITORINFO,
     MonitorFromPoint, MonitorFromWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI,
     SetProcessDpiAwarenessContext,
@@ -37,14 +35,14 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
-    GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetCursorPos, GetForegroundWindow,
-    GetMessageW, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_IBEAM,
-    KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE,
+    GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
+    GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_IBEAM, KillTimer,
+    LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
     RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetCursor,
     SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_CHAR, WM_CONTEXTMENU,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP,
+    SetWindowTextW, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_CHAR,
+    WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP,
     WM_MOUSEACTIVATE, WM_POINTERACTIVATE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE,
     WM_POINTERWHEEL, WM_RBUTTONUP, WM_SETCURSOR, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW,
     WS_CAPTION, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
@@ -99,21 +97,18 @@ thread_local! {
 }
 
 pub fn run() {
-    // One instance: a second launch pokes the running one, which shows a notification.
-    let mutex_name = wide("Local\\screenpen");
+    let replaced = match instance::claim() {
+        instance::Claim::Exit => return,
+        instance::Claim::Continue { replaced } => replaced,
+    };
     unsafe {
-        CreateMutexW(null(), 0, mutex_name.as_ptr());
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            let running = FindWindowW(wide(TRAY_CLASS).as_ptr(), null());
-            PostMessageW(running, WM_SECOND_INSTANCE, 0, 0);
-            return;
-        }
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         EnableMouseInPointer(1);
     }
-    log("start");
+    log(&format!("start {}", instance::VERSION));
     register_classes();
     let tray_hwnd = create_window(TRAY_CLASS, WS_EX_TOOLWINDOW, 0, 0);
+    unsafe { SetWindowTextW(tray_hwnd, wide(&instance::title()).as_ptr()) };
     let (palette, palette_surface, palette_scale) = create_palette();
     let state = ToolState::default();
     let app = App {
@@ -138,7 +133,10 @@ pub fn run() {
     with_app(|app| {
         let taken = register_hotkeys(app);
         let key = chord_text(app, Action::ToggleDrawing);
-        if taken.is_empty() {
+        if let Some(old) = &replaced {
+            let text = format!("Replaced the running copy ({old}).");
+            app.tray.notify(&instance::title(), &text);
+        } else if taken.is_empty() {
             app.tray.notify(
                 "screenpen is running",
                 &format!("{key} or click the tray icon to draw."),
@@ -814,6 +812,7 @@ fn on_tray_command(app: &mut App, command: Command) {
 
 fn menu_state(app: &App) -> MenuState {
     MenuState {
+        version: instance::title(),
         mode: mode(app),
         whiteboard: app.state.whiteboard,
         hide_from_capture: app.hide_palette_from_capture,
@@ -852,6 +851,10 @@ fn on_tray_message(hwnd: HWND, msg: u32, lparam: LPARAM) -> bool {
             }
             _ => {}
         },
+        WM_QUIT_REQUEST => {
+            log("quit requested by a newer version");
+            unsafe { PostQuitMessage(0) };
+        }
         WM_SECOND_INSTANCE => with_app(|app| {
             let key = chord_text(app, Action::ToggleDrawing);
             app.tray.notify(

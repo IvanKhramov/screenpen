@@ -24,6 +24,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo clippy -p screenpen -- -D warnings
       - run: cargo build --release -p screenpen
+        env:
+          # Shown in the tray menu; a running copy of another version gets replaced.
+          SCREENPEN_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
       - uses: actions/upload-artifact@v4
         with:
           name: screenpen-windows-x64
