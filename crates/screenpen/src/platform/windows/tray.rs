@@ -31,6 +31,8 @@ pub const WM_TRAY: u32 = WM_APP + 1;
 pub const WM_SECOND_INSTANCE: u32 = WM_APP + 2;
 /// Posted by a newer version that is taking over: quit.
 pub const WM_QUIT_REQUEST: u32 = WM_APP + 3;
+/// Posted by the settings window after it saved the file.
+pub const WM_RELOAD_SETTINGS: u32 = WM_APP + 4;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {

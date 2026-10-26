@@ -10,9 +10,14 @@ mod i18n;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod palette;
 mod platform;
+mod settings_ui;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod state;
 
 fn main() {
+    if std::env::args().any(|a| a == "--settings") {
+        settings_ui::run();
+        return;
+    }
     platform::run();
 }

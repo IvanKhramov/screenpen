@@ -2,7 +2,7 @@
 //! still loads, and unknown names (a removed action, a typo) are skipped.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use screenpen_core::{Action, Chord, Rgba, ToolKind};
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,23 @@ impl Default for Settings {
             false,
         )
     }
+}
+
+/// Where the settings file lives on this OS.
+pub fn default_path() -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    let base = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        home().map(|h| h.join("Library").join("Application Support"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home().map(|h| h.join(".config")))
+    };
+    base.unwrap_or_else(std::env::temp_dir)
+        .join("screenpen")
+        .join("settings.toml")
 }
 
 pub fn hex(c: Rgba) -> String {

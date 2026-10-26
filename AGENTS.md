@@ -21,3 +21,5 @@ before a new phase and update Status when one is done.
 
 Every build handed over for testing is a release: push a tag `vX.Y.Z` (or `vX.Y.Z-alpha.N`,
 published as a prerelease) and CI attaches `screenpen-<tag>-windows-x64.exe`.
+- Settings window: `SCREENPEN_SETTINGS_SHOT=<dir> screenpen --settings` saves a PNG of each tab and quits.
+  On a headless Linux box run it under `xvfb-run` with `LIBGL_ALWAYS_SOFTWARE=1` (needs libxkbcommon-x11).

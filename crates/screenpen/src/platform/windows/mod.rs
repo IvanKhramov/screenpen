@@ -18,7 +18,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use screenpen_core::render::ChannelOrder;
 use screenpen_core::{Action, Rgba, ToolKind};
 use surface::Surface;
-use tray::{Command, MenuState, Mode, Tray, WM_QUIT_REQUEST, WM_SECOND_INSTANCE, WM_TRAY};
+use tray::{
+    Command, MenuState, Mode, Tray, WM_QUIT_REQUEST, WM_RELOAD_SETTINGS, WM_SECOND_INSTANCE,
+    WM_TRAY,
+};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
 use windows_sys::Win32::Graphics::Gdi::{
@@ -36,19 +39,18 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     VK_NEXT, VK_PRIOR, VK_RIGHT, VK_UP,
 };
 use windows_sys::Win32::UI::Input::Pointer::EnableMouseInPointer;
-use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_EXSTYLE,
-    GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_IBEAM, KillTimer,
-    LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
-    RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SW_SHOWNORMAL, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SetCursor, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    SetWindowTextW, ShowWindow, TranslateMessage, WM_CHAR, WM_CONTEXTMENU, WM_DISPLAYCHANGE,
-    WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEACTIVATE,
-    WM_POINTERACTIVATE, WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE,
-    WM_POINTERWHEEL, WM_RBUTTONUP, WM_SETCURSOR, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW,
-    WS_CAPTION, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
+    GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_IBEAM,
+    KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetCursor,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
+    TranslateMessage, WM_CHAR, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_POINTERACTIVATE, WM_POINTERDOWN,
+    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_POINTERWHEEL, WM_RBUTTONUP, WM_SETCURSOR,
+    WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request};
@@ -133,7 +135,7 @@ pub fn run() {
         palette: ui::PaletteWindow::new(PALETTE_CLASS, TOOLTIP_CLASS, palette),
         palette_placed: false,
         sheet,
-        settings_path: settings_path(),
+        settings_path: crate::config::default_path(),
         language: "auto".to_string(),
         lang: system_lang(),
         active: false,
@@ -247,14 +249,7 @@ fn chord_text(app: &App, action: Action) -> String {
 
 // MARK: settings
 
-fn settings_path() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("screenpen").join("settings.toml")
-}
-
-fn system_lang() -> Lang {
+pub fn system_lang() -> Lang {
     // Primary language id 0x19 is Russian.
     if unsafe { GetUserDefaultUILanguage() } & 0x3ff == 0x19 {
         Lang::Ru
@@ -322,22 +317,42 @@ fn save_settings(app: &App) {
     }
 }
 
+/// Title of the settings window, so a second "Settings…" brings it forward.
+pub const SETTINGS_TITLE: &str = "screenpen settings";
+
 fn open_settings(app: &mut App) {
     save_settings(app);
-    // Notepad rather than the .toml association, which often isn't set. The settings
-    // window replaces this in phase 3b; changes apply the next time drawing starts.
-    let args = wide(&format!("\"{}\"", app.settings_path.display()));
-    let ok = unsafe {
-        ShellExecuteW(
-            null_mut(),
-            wide("open").as_ptr(),
-            wide("notepad.exe").as_ptr(),
-            args.as_ptr(),
-            null(),
-            SW_SHOWNORMAL,
-        ) as isize
-    } > 32;
-    log(&format!("open settings file: {ok}"));
+    let existing = unsafe { FindWindowW(null(), wide(SETTINGS_TITLE).as_ptr()) };
+    if !existing.is_null() {
+        unsafe { SetForegroundWindow(existing) };
+        return;
+    }
+    let spawned = std::env::current_exe()
+        .and_then(|exe| std::process::Command::new(exe).arg("--settings").spawn());
+    if let Err(e) = spawned {
+        log(&format!("settings window not started: {e}"));
+    }
+}
+
+/// Called from the settings process: tells the running screenpen to reload.
+pub fn notify_settings_changed() {
+    let running = unsafe { FindWindowW(wide(TRAY_CLASS).as_ptr(), null()) };
+    if !running.is_null() {
+        unsafe { PostMessageW(running, WM_RELOAD_SETTINGS, 0, 0) };
+    }
+}
+
+/// Applies a settings file changed by the settings window.
+fn reload_settings(app: &mut App) {
+    load_settings(app);
+    register_hotkeys(app);
+    if app.active {
+        refresh_all(app);
+        app.palette.hide();
+        show_palette(app);
+        app.sheet.hide();
+    }
+    update_tray(app);
 }
 
 // MARK: windows
@@ -1081,6 +1096,10 @@ fn on_tray_message(hwnd: HWND, msg: u32, lparam: LPARAM) -> bool {
             }
             _ => {}
         },
+        WM_RELOAD_SETTINGS => with_app(|app| {
+            log("settings changed by the settings window");
+            reload_settings(app);
+        }),
         WM_QUIT_REQUEST => {
             log("quit requested by a newer version");
             unsafe { PostQuitMessage(0) };

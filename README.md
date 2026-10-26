@@ -19,9 +19,10 @@ Left click toggles drawing, right click opens the menu (whiteboard, dimming, fad
 The palette shows a tooltip with the name and key of every button. Drag it by the dotted grip
 (it snaps to screen edges); double-click the grip to turn it vertical. Press `?` for all shortcuts.
 
-Settings live in `%APPDATA%\screenpen\settings.toml`: colors, palette buttons and their order,
-every shortcut (an empty string turns one off), language (`auto`, `en`, `ru`). "Settings…" in the
-tray opens the file; changes apply the next time you start drawing.
+"Settings…" in the tray (or the gear on the palette) opens the settings window: language, colors,
+width, dimming, fading, every shortcut (click and press the new keys, × turns one off, conflicts
+show in red) and the palette buttons (drag to reorder, add, remove). Changes apply at once.
+They are stored in `%APPDATA%\screenpen\settings.toml`.
 
 | Key | Action |
 |---|---|
