@@ -1,3 +1,24 @@
 //! Model, geometry and rendering for screenpen. No OS dependencies.
 //!
-//! The port of ScreenInkCore lands here in phase 1 (see PLAN.md).
+//! A port of ScreenInkCore (github.com/volyx/ScreenInk), with the author's permission.
+
+pub mod annotation;
+pub mod document;
+pub mod geom;
+pub mod pressure;
+pub mod render;
+pub mod shortcuts;
+pub mod stroke;
+pub mod style;
+pub mod text;
+pub mod tools;
+
+pub use annotation::{Annotation, AnnotationId, AnnotationKind, BadgeFormat, Geometry};
+pub use document::Document;
+pub use geom::{Point, Rect};
+pub use pressure::PressureFilter;
+pub use render::ChannelOrder;
+pub use shortcuts::{Action, Chord, Key, Shortcuts};
+pub use stroke::{BezierSegment, StrokeBuilder};
+pub use style::{Blend, Rgba, Style};
+pub use tools::ToolKind;

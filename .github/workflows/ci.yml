@@ -10,8 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Rendering self-test
+        run: cargo run -p screenpen-core --example selftest -- "$RUNNER_TEMP/selftest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selftest-png
+          path: ${{ runner.temp }}/selftest
   windows:
     runs-on: windows-latest
     steps:

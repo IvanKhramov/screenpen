@@ -10,7 +10,9 @@ before a new phase and update Status when one is done.
 
 ## Verify
 
-- `cargo fmt --all --check`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
+- Rendering: `cargo run -p screenpen-core --example selftest -- <dir>` writes `annotations.png`; look at it when
+  you change how something draws, and add new kinds to `examples/selftest.rs`.
 - Windows code from Linux: `cargo clippy --target x86_64-pc-windows-msvc -p screenpen -- -D warnings`.
 - The live UI can't be driven from CI: Windows behavior is checked by hand with the
   checklist in PLAN.md, using the exe from GitHub Releases.
