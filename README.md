@@ -7,7 +7,7 @@ Status: early. Windows 11 first, then macOS and Linux. See [PLAN.md](PLAN.md).
 
 ## Try the Windows spike
 
-Grab `screenpen-windows-x64` from the latest CI run, or build it yourself:
+Download `screenpen-<version>-windows-x64.exe` from [Releases](https://github.com/IvanKhramov/screenpen/releases), or build it yourself:
 
 ```powershell
 cargo run --release -p screenpen
