@@ -1,19 +1,22 @@
-//! Phase 0 spike: a layered overlay window per monitor, mouse drawing through
-//! WM_POINTER, global hotkeys, ghost (click-through) mode, slide-key forwarding to
-//! the previous foreground window and a palette window that can hide from capture.
-//! Everything is logged to %TEMP%\screenpen.log for the manual checklist in PLAN.md.
+//! Windows backend: a layered overlay window per monitor drawing a `Canvas`, input
+//! through WM_POINTER, global hotkeys, ghost (click-through) mode, slide-key
+//! forwarding to the previous foreground window, the palette and the tray icon.
+//! Diagnostics go to %TEMP%\screenpen.log.
 
+mod keys;
 mod surface;
 mod tray;
 
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::ptr::{null, null_mut};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use screenpen_core::render::ChannelOrder;
+use screenpen_core::{Action, Rgba, ToolKind};
 use surface::{Surface, bgra};
-use tiny_skia::{LineCap, LineJoin, Paint, PathBuilder, Rect, Stroke, Transform};
-use tray::{Command, Mode, Tray, WM_SECOND_INSTANCE, WM_TRAY};
+use tiny_skia::{Paint, Rect, Transform};
+use tray::{Command, MenuState, Mode, Tray, WM_SECOND_INSTANCE, WM_TRAY};
 use windows_sys::Win32::Foundation::{
     ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
@@ -28,67 +31,62 @@ use windows_sys::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
-    MAPVK_VK_TO_VSC, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MapVirtualKeyW, RegisterHotKey,
-    SendInput, VK_DOWN, VK_ESCAPE, VK_F8, VK_F9, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RIGHT, VK_UP,
+    GetDoubleClickTime, MAPVK_VK_TO_VSC, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+    MapVirtualKeyW, RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, VK_DOWN, VK_LEFT,
+    VK_NEXT, VK_PRIOR, VK_RIGHT, VK_UP,
 };
 use windows_sys::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
     GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetCursorPos, GetForegroundWindow,
-    GetMessageW, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_CROSS, LoadCursorW,
-    MA_NOACTIVATE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
-    SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow,
-    SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
-    WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_POINTERACTIVATE, WM_POINTERDOWN,
-    WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONUP, WNDCLASSEXW, WS_CAPTION, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    GetMessageW, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_IBEAM,
+    KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetCursor,
+    SetForegroundWindow, SetTimer, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WM_CHAR, WM_CONTEXTMENU,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_POINTERACTIVATE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERUPDATE,
+    WM_POINTERWHEEL, WM_RBUTTONUP, WM_SETCURSOR, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW,
+    WS_CAPTION, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-const HOTKEY_TOGGLE: i32 = 1; // Ctrl+Alt+Shift+A
-const HOTKEY_UNGHOST: i32 = 2; // Ctrl+Alt+Shift+G
-const HOTKEY_QUIT: i32 = 3; // Ctrl+Alt+Shift+Q
+use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request};
+use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState};
+
 const PA_NOACTIVATE: LRESULT = 3; // WM_POINTERACTIVATE result
 const POINTER_FLAG_FIRSTBUTTON: usize = 0x0010; // HIWORD(wParam) of WM_POINTER*
-
-const SWATCHES: [(u8, u8, u8); 5] = [
-    (0xff, 0x3b, 0x30),
-    (0xff, 0xcc, 0x00),
-    (0x34, 0xc7, 0x59),
-    (0x0a, 0x84, 0xff),
-    (0xff, 0xff, 0xff),
+const POINTER_FLAG_SECONDBUTTON: usize = 0x0020;
+const FADE_TIMER: usize = 1;
+const GLOBAL_ACTIONS: [(i32, Action); 3] = [
+    (1, Action::ToggleDrawing),
+    (2, Action::ExitGhost),
+    (3, Action::Quit),
 ];
 
 struct Overlay {
     hwnd: HWND,
     monitor: RECT,
-    scale: f32,
     surface: Surface,
-    strokes: Vec<(usize, Vec<(f32, f32)>)>, // (swatch, points in surface pixels)
+    canvas: Canvas,
     /// Cover the monitor's last pixel row too (only above a full-screen app).
     full_height: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Forward {
-    Post,
-    Input,
-}
-
 struct App {
     overlays: Vec<Overlay>,
+    state: ToolState,
     palette: HWND,
     palette_surface: Surface,
     palette_origin: POINT,
     palette_scale: f32,
     active: bool,
     ghost: bool,
-    drawing: Option<usize>, // overlay index
-    swatch: usize,
+    /// Overlay index and button of the gesture in progress.
+    pressed: Option<(usize, Button)>,
+    last_click: Option<(Instant, POINT)>,
     previous: HWND,
     hide_palette_from_capture: bool,
-    forward: Forward,
     rebuild: bool,
     tray: Tray,
     tray_hwnd: HWND,
@@ -101,10 +99,6 @@ thread_local! {
 }
 
 pub fn run() {
-    unsafe {
-        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        EnableMouseInPointer(1);
-    }
     // One instance: a second launch pokes the running one, which shows a notification.
     let mutex_name = wide("Local\\screenpen");
     unsafe {
@@ -114,52 +108,40 @@ pub fn run() {
             PostMessageW(running, WM_SECOND_INSTANCE, 0, 0);
             return;
         }
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        EnableMouseInPointer(1);
     }
     log("start");
     register_classes();
-    let tray_hwnd = create_hidden_window(TRAY_CLASS);
+    let tray_hwnd = create_window(TRAY_CLASS, WS_EX_TOOLWINDOW, 0, 0);
     let (palette, palette_surface, palette_scale) = create_palette();
+    let state = ToolState::default();
     let app = App {
-        overlays: create_overlays(),
+        overlays: create_overlays(&state),
+        state,
         palette,
         palette_surface,
         palette_origin: POINT { x: 0, y: 0 },
         palette_scale,
         active: false,
         ghost: false,
-        drawing: None,
-        swatch: 0,
+        pressed: None,
+        last_click: None,
         previous: null_mut(),
         hide_palette_from_capture: false,
-        forward: Forward::Post,
         rebuild: false,
         tray: Tray::new(tray_hwnd),
         tray_hwnd,
         taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
     };
     APP.with(|cell| *cell.borrow_mut() = Some(app));
-
-    let mods = MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT;
-    let mut taken = Vec::new();
-    for (id, key) in [
-        (HOTKEY_TOGGLE, b'A'),
-        (HOTKEY_UNGHOST, b'G'),
-        (HOTKEY_QUIT, b'Q'),
-    ] {
-        let ok = unsafe { RegisterHotKey(null_mut(), id, mods, key as u32) } != 0;
-        log(&format!(
-            "hotkey Ctrl+Alt+Shift+{} registered: {ok}",
-            key as char
-        ));
-        if !ok {
-            taken.push(format!("Ctrl+Alt+Shift+{}", key as char));
-        }
-    }
     with_app(|app| {
+        let taken = register_hotkeys(app);
+        let key = chord_text(app, Action::ToggleDrawing);
         if taken.is_empty() {
             app.tray.notify(
                 "screenpen is running",
-                "Ctrl+Alt+Shift+A or click the tray icon to draw.",
+                &format!("{key} or click the tray icon to draw."),
             );
         } else {
             let text = format!(
@@ -205,6 +187,46 @@ fn with_app(f: impl FnOnce(&mut App)) {
     });
 }
 
+/// Registers the global shortcuts; returns the ones another app already holds.
+fn register_hotkeys(app: &App) -> Vec<String> {
+    let mut taken = Vec::new();
+    for (id, action) in GLOBAL_ACTIONS {
+        unsafe { UnregisterHotKey(null_mut(), id) };
+        let Some(chord) = app.state.shortcuts.chord(action) else {
+            continue;
+        };
+        let Some(vk) = keys::vk_from_key(chord.key) else {
+            continue;
+        };
+        let mut mods = MOD_NOREPEAT;
+        if chord.ctrl {
+            mods |= MOD_CONTROL;
+        }
+        if chord.alt {
+            mods |= MOD_ALT;
+        }
+        if chord.shift {
+            mods |= MOD_SHIFT;
+        }
+        let ok = unsafe { RegisterHotKey(null_mut(), id, mods, vk as u32) } != 0;
+        log(&format!(
+            "hotkey {chord} for {} registered: {ok}",
+            action.name()
+        ));
+        if !ok {
+            taken.push(chord.to_string());
+        }
+    }
+    taken
+}
+
+fn chord_text(app: &App, action: Action) -> String {
+    app.state
+        .shortcuts
+        .chord(action)
+        .map_or_else(|| "(no shortcut)".to_string(), |c| c.to_string())
+}
+
 // MARK: windows
 
 fn wide(s: &str) -> Vec<u16> {
@@ -218,22 +240,14 @@ const TRAY_CLASS: &str = "screenpen.tray";
 fn register_classes() {
     unsafe {
         let instance = GetModuleHandleW(null());
-        for (name, cursor) in [
-            (OVERLAY_CLASS, IDC_CROSS),
-            (PALETTE_CLASS, null()),
-            (TRAY_CLASS, null()),
-        ] {
+        for name in [OVERLAY_CLASS, PALETTE_CLASS, TRAY_CLASS] {
             let name = wide(name);
             let class = WNDCLASSEXW {
                 cbSize: size_of::<WNDCLASSEXW>() as u32,
-                style: CS_HREDRAW | CS_VREDRAW,
+                style: CS_DBLCLKS,
                 lpfnWndProc: Some(wndproc),
                 hInstance: instance,
-                hCursor: if cursor.is_null() {
-                    null_mut()
-                } else {
-                    LoadCursorW(null_mut(), cursor)
-                },
+                hCursor: LoadCursorW(null_mut(), IDC_ARROW),
                 lpszClassName: name.as_ptr(),
                 ..std::mem::zeroed()
             };
@@ -242,19 +256,18 @@ fn register_classes() {
     }
 }
 
-/// A never-shown window that receives tray callbacks.
-fn create_hidden_window(class: &str) -> HWND {
+fn create_window(class: &str, ex_style: u32, width: i32, height: i32) -> HWND {
     let class = wide(class);
     unsafe {
         CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            ex_style,
             class.as_ptr(),
             class.as_ptr(),
             WS_POPUP,
             0,
             0,
-            0,
-            0,
+            width,
+            height,
             null_mut(),
             null_mut(),
             GetModuleHandleW(null()),
@@ -291,41 +304,34 @@ fn monitor_info(m: HMONITOR) -> (RECT, f32) {
     }
 }
 
-fn create_overlays() -> Vec<Overlay> {
-    let class = wide(OVERLAY_CLASS);
+fn create_overlays(state: &ToolState) -> Vec<Overlay> {
     let mut out = Vec::new();
     for m in monitors() {
         let (r, scale) = monitor_info(m);
         let (w, h) = ((r.right - r.left) as u32, (r.bottom - r.top) as u32);
-        let hwnd = unsafe {
-            CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                class.as_ptr(),
-                class.as_ptr(),
-                WS_POPUP,
-                r.left,
-                r.top,
-                w as i32,
-                h as i32 - 1,
-                null_mut(),
-                null_mut(),
-                GetModuleHandleW(null()),
-                null(),
-            )
-        };
-        let Some(surface) = Surface::new(w, h) else {
+        let hwnd = create_window(
+            OVERLAY_CLASS,
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            w as i32,
+            h as i32 - 1,
+        );
+        let (Some(surface), Some(mut canvas)) = (
+            Surface::new(w, h),
+            Canvas::new(w, h, scale, ChannelOrder::Bgra),
+        ) else {
+            log("out of memory for an overlay");
             continue;
         };
+        canvas.set_auto_fade(state.auto_fade);
         log(&format!(
-            "overlay {:?} monitor {}x{} at ({}, {}) scale {scale}",
-            hwnd, w, h, r.left, r.top
+            "overlay {hwnd:?} monitor {w}x{h} at ({}, {}) scale {scale}",
+            r.left, r.top
         ));
         out.push(Overlay {
             hwnd,
             monitor: r,
-            scale,
             surface,
-            strokes: Vec::new(),
+            canvas,
             full_height: false,
         });
     }
@@ -333,46 +339,42 @@ fn create_overlays() -> Vec<Overlay> {
 }
 
 fn rebuild_overlays(app: &mut App) {
-    log("display change: rebuilding overlays (spike drops strokes)");
-    for o in app.overlays.drain(..) {
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(o.hwnd) };
+    log("display change: rebuilding overlays (drawings are kept per monitor position)");
+    let mut old = std::mem::take(&mut app.overlays);
+    app.overlays = create_overlays(&app.state);
+    for o in &mut app.overlays {
+        // Keep the drawing of a monitor that's still at the same place.
+        if let Some(i) = old.iter().position(|p| same_rect(p.monitor, o.monitor)) {
+            let previous = old.remove(i);
+            o.canvas.doc = previous.canvas.doc;
+            unsafe { DestroyWindow(previous.hwnd) };
+        }
     }
-    app.overlays = create_overlays();
+    for o in old {
+        unsafe { DestroyWindow(o.hwnd) };
+    }
     if app.active {
         show(app);
     }
 }
 
 fn create_palette() -> (HWND, Surface, f32) {
-    let class = wide(PALETTE_CLASS);
     let mut cursor = POINT { x: 0, y: 0 };
     unsafe { GetCursorPos(&mut cursor) };
     let (_, scale) = monitor_info(unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) });
     let (w, h) = palette_size(scale);
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            class.as_ptr(),
-            class.as_ptr(),
-            WS_POPUP,
-            0,
-            0,
-            w as i32,
-            h as i32,
-            null_mut(),
-            null_mut(),
-            GetModuleHandleW(null()),
-            null(),
-        )
-    };
+    let ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    let hwnd = create_window(PALETTE_CLASS, ex, w as i32, h as i32);
     (hwnd, Surface::new(w, h).expect("palette surface"), scale)
 }
 
-/// Swatches, then "clear" and "ghost" buttons.
+/// Nine swatches, then "clear" and "ghost" buttons. Replaced by the real palette in phase 3.
+const PALETTE_CELLS: usize = 11;
+
 fn palette_size(scale: f32) -> (u32, u32) {
-    let cell = 40.0 * scale;
+    let cell = 36.0 * scale;
     (
-        ((SWATCHES.len() + 2) as f32 * cell + 8.0 * scale) as u32,
+        (PALETTE_CELLS as f32 * cell + 8.0 * scale) as u32,
         (cell + 8.0 * scale) as u32,
     )
 }
@@ -380,12 +382,63 @@ fn palette_size(scale: f32) -> (u32, u32) {
 // MARK: show / hide / ghost
 
 fn on_hotkey(app: &mut App, id: i32) {
-    match id {
-        HOTKEY_TOGGLE if app.active => hide(app),
-        HOTKEY_TOGGLE => show(app),
-        HOTKEY_UNGHOST if app.active && app.ghost => set_ghost(app, false),
-        HOTKEY_QUIT => unsafe { PostQuitMessage(0) },
+    let Some(&(_, action)) = GLOBAL_ACTIONS.iter().find(|(i, _)| *i == id) else {
+        return;
+    };
+    match action {
+        Action::ToggleDrawing if app.active => hide(app),
+        Action::ToggleDrawing => show(app),
+        Action::ExitGhost if app.active && app.ghost => set_ghost(app, false),
+        Action::Quit => unsafe { PostQuitMessage(0) },
         _ => {}
+    }
+}
+
+fn background(app: &App) -> Rgba {
+    if app.ghost {
+        Rgba::BLACK.with_alpha(0.0)
+    } else if app.state.whiteboard {
+        Rgba::WHITE
+    } else {
+        // Alpha 0 pixels of a layered window let clicks through; 1/255 is invisible
+        // but keeps the whole window hit-testable.
+        Rgba::BLACK.with_alpha(app.state.dim.max(1.0 / 255.0))
+    }
+}
+
+/// Repaints every overlay after a background, ghost or document-wide change.
+fn refresh_all(app: &mut App) {
+    let bg = background(app);
+    for o in &mut app.overlays {
+        o.canvas.set_auto_fade(app.state.auto_fade);
+        o.canvas.set_background(bg);
+        o.canvas.rebuild_cache();
+        paint(o, Repaint::Full);
+    }
+    render_palette(app);
+    update_fade_timer(app);
+}
+
+fn paint(o: &mut Overlay, repaint: Repaint) {
+    let mut target = o.surface.pixmap();
+    let changed = o.canvas.paint(&mut target, repaint);
+    // A full repaint also resizes the window (the 1px-short trick), so it sends everything.
+    let dirty = match (repaint, changed) {
+        (_, None) => return,
+        (Repaint::Full, _) => None,
+        (_, Some(r)) => Some(RECT {
+            left: r.left(),
+            top: r.top(),
+            right: r.right(),
+            bottom: r.bottom(),
+        }),
+    };
+    let h = o.surface.height - if o.full_height { 0 } else { 1 };
+    if !o
+        .surface
+        .present(o.hwnd, o.monitor.left, o.monitor.top, h, dirty)
+    {
+        log("UpdateLayeredWindowIndirect failed");
     }
 }
 
@@ -403,7 +456,9 @@ fn show(app: &mut App) {
     for o in &mut app.overlays {
         o.full_height = fullscreen.is_some_and(|r| same_rect(r, o.monitor));
         set_click_through(o.hwnd, false);
-        render(o, false);
+    }
+    refresh_all(app);
+    for o in &app.overlays {
         unsafe {
             ShowWindow(o.hwnd, SW_SHOWNA);
             SetWindowPos(
@@ -424,11 +479,13 @@ fn show(app: &mut App) {
 
 fn hide(app: &mut App) {
     app.active = false;
-    app.drawing = None;
-    for o in &app.overlays {
+    app.pressed = None;
+    for o in &mut app.overlays {
+        o.canvas.cancel();
         unsafe { ShowWindow(o.hwnd, SW_HIDE) };
     }
     unsafe { ShowWindow(app.palette, SW_HIDE) };
+    update_fade_timer(app);
     let ok = unsafe { SetForegroundWindow(app.previous) } != 0;
     log(&format!("hide: focus back to {:?}: {ok}", app.previous));
     update_tray(app);
@@ -436,12 +493,12 @@ fn hide(app: &mut App) {
 
 fn set_ghost(app: &mut App, ghost: bool) {
     app.ghost = ghost;
-    app.drawing = None;
+    app.pressed = None;
     for o in &mut app.overlays {
+        o.canvas.cancel();
         set_click_through(o.hwnd, ghost);
-        render(o, ghost);
     }
-    render_palette(app);
+    refresh_all(app);
     if ghost {
         let ok = unsafe { SetForegroundWindow(app.previous) } != 0;
         log(&format!("ghost on: focus back to {:?}: {ok}", app.previous));
@@ -472,65 +529,14 @@ fn set_capture_hiding(app: &mut App, on: bool) {
     log(&format!("palette hidden from capture: {on} ({ok})"));
 }
 
-fn on_tray_command(app: &mut App, command: Command) {
-    match command {
-        Command::ToggleDrawing if app.active => hide(app),
-        Command::ToggleDrawing => show(app),
-        Command::ToggleGhost if app.active => set_ghost(app, !app.ghost),
-        Command::ToggleGhost => {}
-        Command::ToggleCaptureHiding => set_capture_hiding(app, !app.hide_palette_from_capture),
-        Command::Quit => unsafe { PostQuitMessage(0) },
-    }
-}
-
-/// Tray window messages. The menu runs a modal loop, so it's shown with the app
-/// state released and the picked command is applied afterwards.
-fn on_tray_message(hwnd: HWND, msg: u32, lparam: LPARAM) -> bool {
-    let mut state = None;
-    with_app(|app| {
-        if hwnd == app.tray_hwnd {
-            state = Some((
-                mode(app),
-                app.hide_palette_from_capture,
-                app.taskbar_created,
-            ));
-        }
-    });
-    let Some((mode, hide_from_capture, taskbar_created)) = state else {
-        return false;
-    };
-    match msg {
-        WM_TRAY => match lparam as u32 {
-            WM_LBUTTONUP => with_app(|app| on_tray_command(app, Command::ToggleDrawing)),
-            WM_RBUTTONUP | WM_CONTEXTMENU => {
-                if let Some(command) = Tray::menu(hwnd, mode, hide_from_capture) {
-                    with_app(|app| on_tray_command(app, command));
-                }
-            }
-            _ => {}
-        },
-        WM_SECOND_INSTANCE => with_app(|app| {
-            app.tray.notify(
-                "screenpen is already running",
-                "Ctrl+Alt+Shift+A or click the tray icon to draw.",
-            )
-        }),
-        m if m == taskbar_created => with_app(|app| {
-            let ok = app.tray.add();
-            log(&format!("explorer restarted, tray icon re-added: {ok}"));
-        }),
-        _ => return false,
-    }
-    true
-}
-
 fn set_click_through(hwnd: HWND, on: bool) {
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let transparent = WS_EX_TRANSPARENT as isize;
         let style = if on {
-            style | WS_EX_TRANSPARENT as isize
+            style | transparent
         } else {
-            style & !(WS_EX_TRANSPARENT as isize)
+            style & !transparent
         };
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
     }
@@ -550,34 +556,16 @@ fn focus_overlay_under_cursor(app: &App) {
     }
 }
 
-fn show_palette(app: &mut App) {
-    // Top center of the primary overlay's monitor, owned by that overlay so it always
-    // stays above it without re-raising.
-    if let Some(o) = app
-        .overlays
-        .iter()
-        .find(|o| o.monitor.left == 0 && o.monitor.top == 0)
-        .or(app.overlays.first())
-    {
-        unsafe { SetWindowLongPtrW(app.palette, GWLP_HWNDPARENT, o.hwnd as isize) };
-        let width = (o.monitor.right - o.monitor.left) - app.palette_surface.width as i32;
-        app.palette_origin = POINT {
-            x: o.monitor.left + width / 2,
-            y: o.monitor.top + (16.0 * o.scale) as i32,
-        };
-    }
-    render_palette(app);
+fn update_fade_timer(app: &App) {
+    let Some(first) = app.overlays.first() else {
+        return;
+    };
     unsafe {
-        ShowWindow(app.palette, SW_SHOWNA);
-        SetWindowPos(
-            app.palette,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
+        if app.active && app.state.auto_fade.is_some() {
+            SetTimer(first.hwnd, FADE_TIMER, 50, None);
+        } else {
+            KillTimer(first.hwnd, FADE_TIMER);
+        }
     }
 }
 
@@ -613,96 +601,53 @@ fn contains(r: RECT, p: POINT) -> bool {
     p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom
 }
 
-// MARK: rendering
+// MARK: palette (temporary until phase 3)
 
-fn stroke_paint(swatch: usize) -> Paint<'static> {
-    let (r, g, b) = SWATCHES[swatch];
-    let mut paint = Paint::default();
-    paint.set_color(bgra(r, g, b, 255));
-    paint.anti_alias = true;
-    paint
-}
-
-fn pen(scale: f32) -> Stroke {
-    Stroke {
-        width: 4.0 * scale,
-        line_cap: LineCap::Round,
-        line_join: LineJoin::Round,
-        ..Stroke::default()
+fn show_palette(app: &mut App) {
+    // Top center of the primary monitor, owned by its overlay so it always stays above
+    // it without re-raising.
+    if let Some(o) = app
+        .overlays
+        .iter()
+        .find(|o| o.monitor.left == 0 && o.monitor.top == 0)
+        .or(app.overlays.first())
+    {
+        unsafe { SetWindowLongPtrW(app.palette, GWLP_HWNDPARENT, o.hwnd as isize) };
+        let width = (o.monitor.right - o.monitor.left) - app.palette_surface.width as i32;
+        app.palette_origin = POINT {
+            x: o.monitor.left + width / 2,
+            y: o.monitor.top + (16.0 * o.canvas.scale()) as i32,
+        };
     }
-}
-
-/// Full redraw. While drawing, the background is black at alpha 1/255: invisible, but
-/// it keeps the whole window hit-testable (alpha 0 pixels of a layered window let clicks
-/// through). In ghost mode the background is fully transparent.
-fn render(o: &mut Overlay, ghost: bool) {
-    let stroke = pen(o.scale);
-    let mut pixmap = o.surface.pixmap();
-    pixmap.fill(if ghost {
-        bgra(0, 0, 0, 0)
-    } else {
-        bgra(0, 0, 0, 1)
-    });
-    for (swatch, points) in &o.strokes {
-        if let Some(path) = polyline(points) {
-            pixmap.stroke_path(
-                &path,
-                &stroke_paint(*swatch),
-                &stroke,
-                Transform::identity(),
-                None,
-            );
-        }
-    }
-    present(o);
-}
-
-/// Draws only the newest segment of the stroke in progress.
-fn render_segment(o: &mut Overlay) {
-    let stroke = pen(o.scale);
-    let Some((swatch, points)) = o.strokes.last() else {
-        return;
-    };
-    let tail = &points[points.len().saturating_sub(2)..];
-    let Some(path) = polyline(tail) else { return };
-    let paint = stroke_paint(*swatch);
-    o.surface
-        .pixmap()
-        .stroke_path(&path, &paint, &stroke, Transform::identity(), None);
-    present(o);
-}
-
-fn polyline(points: &[(f32, f32)]) -> Option<tiny_skia::Path> {
-    let mut pb = PathBuilder::new();
-    let (x, y) = *points.first()?;
-    pb.move_to(x, y);
-    if points.len() == 1 {
-        pb.line_to(x + 0.01, y); // a dot
-    }
-    for &(x, y) in &points[1..] {
-        pb.line_to(x, y);
-    }
-    pb.finish()
-}
-
-fn present(o: &Overlay) {
-    let h = o.surface.height - if o.full_height { 0 } else { 1 };
-    if !o.surface.present(o.hwnd, o.monitor.left, o.monitor.top, h) {
-        log("UpdateLayeredWindow failed");
+    render_palette(app);
+    unsafe {
+        ShowWindow(app.palette, SW_SHOWNA);
+        SetWindowPos(
+            app.palette,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
     }
 }
 
 fn render_palette(app: &mut App) {
+    if !app.active {
+        return;
+    }
     let s = app.palette_scale;
-    let cell = 40.0 * s;
+    let cell = 36.0 * s;
     let pad = 4.0 * s;
-    let (swatch, ghost) = (app.swatch, app.ghost);
+    let (selected, ghost) = (app.state.color_index, app.ghost);
+    let colors = app.state.colors;
     let mut pixmap = app.palette_surface.pixmap();
     pixmap.fill(bgra(0, 0, 0, 0));
     let mut bg = Paint::default();
     bg.set_color(bgra(0x2c, 0x2c, 0x2e, 235));
-    let w = pixmap.width() as f32;
-    let h = pixmap.height() as f32;
+    let (w, h) = (pixmap.width() as f32, pixmap.height() as f32);
     pixmap.fill_rect(
         Rect::from_xywh(0.0, 0.0, w, h).unwrap(),
         &bg,
@@ -710,17 +655,22 @@ fn render_palette(app: &mut App) {
         None,
     );
     let mut fill = Paint::default();
-    for i in 0..SWATCHES.len() + 2 {
+    for i in 0..PALETTE_CELLS {
         let x = pad + i as f32 * cell;
-        let inset = if i == swatch { 4.0 * s } else { 9.0 * s };
+        let inset = if i == selected { 3.0 * s } else { 8.0 * s };
         let color = match i {
-            i if i < SWATCHES.len() => {
-                let (r, g, b) = SWATCHES[i];
-                bgra(r, g, b, 255)
+            i if i < colors.len() => {
+                let c = colors[i];
+                bgra(
+                    (c.red * 255.0) as u8,
+                    (c.green * 255.0) as u8,
+                    (c.blue * 255.0) as u8,
+                    255,
+                )
             }
-            i if i == SWATCHES.len() => bgra(0x8e, 0x8e, 0x93, 255), // clear
-            _ if ghost => bgra(0xaf, 0x52, 0xde, 255),               // ghost on
-            _ => bgra(0x48, 0x48, 0x4a, 255),                        // ghost off
+            9 => bgra(0x8e, 0x8e, 0x93, 255),          // clear
+            _ if ghost => bgra(0xaf, 0x52, 0xde, 255), // ghost on
+            _ => bgra(0x48, 0x48, 0x4a, 255),          // ghost off
         };
         fill.set_color(color);
         let r = Rect::from_xywh(
@@ -733,117 +683,189 @@ fn render_palette(app: &mut App) {
         pixmap.fill_rect(r, &fill, Transform::identity(), None);
     }
     let POINT { x, y } = app.palette_origin;
-    app.palette_surface
-        .present(app.palette, x, y, app.palette_surface.height);
+    let height = app.palette_surface.height;
+    app.palette_surface.present(app.palette, x, y, height, None);
 }
 
 fn on_palette_click(app: &mut App, screen: POINT) {
     let s = app.palette_scale;
-    let i = ((screen.x - app.palette_origin.x) as f32 - 4.0 * s) / (40.0 * s);
+    let i = ((screen.x - app.palette_origin.x) as f32 - 4.0 * s) / (36.0 * s);
     if i < 0.0 {
         return;
     }
+    let target = focused_overlay(app);
     match i as usize {
-        i if i < SWATCHES.len() => {
-            app.swatch = i;
-            render_palette(app);
-        }
-        i if i == SWATCHES.len() => {
-            for o in &mut app.overlays {
-                o.strokes.clear();
-                render(o, app.ghost);
+        i if i < 9 => run_action(app, target, Action::Color(i as u8)),
+        9 => {
+            for o in 0..app.overlays.len() {
+                run_action(app, o, Action::Clear);
             }
         }
-        i if i == SWATCHES.len() + 1 => set_ghost(app, !app.ghost),
+        10 => set_ghost(app, !app.ghost),
         _ => {}
     }
 }
 
-// MARK: keys
+/// The overlay that has keyboard focus, or the first one.
+fn focused_overlay(app: &App) -> usize {
+    let front = unsafe { GetForegroundWindow() };
+    app.overlays
+        .iter()
+        .position(|o| o.hwnd == front)
+        .unwrap_or(0)
+}
 
-fn on_key(app: &mut App, index: usize, vk: u16) {
-    match vk {
-        VK_ESCAPE => hide(app),
-        VK_F8 => {
-            app.forward = if app.forward == Forward::Post {
-                Forward::Input
-            } else {
-                Forward::Post
-            };
-            log(&format!("slide key forwarding: {:?}", app.forward));
+// MARK: actions and keys
+
+fn run_action(app: &mut App, index: usize, action: Action) {
+    let Some(o) = app.overlays.get_mut(index) else {
+        return;
+    };
+    let (repaint, request) = o.canvas.perform(&mut app.state, action);
+    paint(o, repaint);
+    match request {
+        None => {}
+        Some(Request::StopDrawing) => hide(app),
+        Some(Request::Ghost) => set_ghost(app, true),
+        Some(Request::ToggleWhiteboard) => {
+            app.state.whiteboard = !app.state.whiteboard;
+            refresh_all(app);
         }
-        VK_F9 => set_capture_hiding(app, !app.hide_palette_from_capture),
-        VK_PRIOR | VK_NEXT | VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN => forward_key(app, index, vk),
-        k if k == b'G' as u16 => set_ghost(app, true),
-        k if k == b'C' as u16 => {
-            for o in &mut app.overlays {
-                o.strokes.clear();
-                render(o, false);
+        Some(Request::Help) => log("help: arrives with the phase 3 cheat sheet"),
+        Some(Request::StateChanged) => {
+            // Tool, color or width changed: other screens drop their gestures.
+            for (i, o) in app.overlays.iter_mut().enumerate() {
+                if i != index {
+                    let r = o.canvas.cancel();
+                    paint(o, r);
+                }
             }
-        }
-        k if k == b'Z' as u16 => {
-            let o = &mut app.overlays[index];
-            o.strokes.pop();
-            render(o, false);
-        }
-        k if (b'1' as u16..=b'5' as u16).contains(&k) => {
-            app.swatch = (k - b'1' as u16) as usize;
             render_palette(app);
         }
-        _ => {}
+    }
+}
+
+fn on_key(app: &mut App, index: usize, vk: u16) {
+    let typing = app.overlays[index].canvas.is_typing();
+    let Some(chord) = keys::chord_from_vk(vk) else {
+        return;
+    };
+    if typing {
+        // While typing, letters are text; only Esc (finish) is a shortcut.
+        if chord.key == screenpen_core::Key::Escape {
+            run_action(app, index, Action::Escape);
+        }
+        return;
+    }
+    if let Some(action) = app.state.shortcuts.local_action(chord) {
+        run_action(app, index, action);
+    } else if !chord.ctrl
+        && !chord.alt
+        && [VK_PRIOR, VK_NEXT, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN].contains(&vk)
+    {
+        forward_key(app, vk);
     }
 }
 
 /// Sends a slide key to the window that was in front before we took focus.
-fn forward_key(app: &mut App, index: usize, vk: u16) {
+fn forward_key(app: &App, vk: u16) {
     let target = app.previous;
     let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) };
-    match app.forward {
-        Forward::Post => {
-            // repeat 1, scan code, extended bit (these are all extended keys)
-            let down = 1 | (scan as isize) << 16 | 1 << 24;
-            let up = down | 1 << 30 | 1 << 31;
-            let ok = unsafe {
-                PostMessageW(target, WM_KEYDOWN, vk as WPARAM, down) != 0
-                    && PostMessageW(target, WM_KEYUP, vk as WPARAM, up) != 0
-            };
-            log(&format!(
-                "forward vk {vk:#x} by PostMessage to {target:?}: {ok}"
-            ));
-        }
-        Forward::Input => {
-            let key = |flags| INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: vk,
-                        wScan: scan as u16,
-                        dwFlags: flags,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
-                },
-            };
-            let inputs = [
-                key(KEYEVENTF_EXTENDEDKEY),
-                key(KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
-            ];
-            unsafe {
-                let front = SetForegroundWindow(target) != 0;
-                std::thread::sleep(Duration::from_millis(30));
-                let sent = SendInput(
-                    inputs.len() as u32,
-                    inputs.as_ptr(),
-                    size_of::<INPUT>() as i32,
-                );
-                std::thread::sleep(Duration::from_millis(30));
-                let back = SetForegroundWindow(app.overlays[index].hwnd) != 0;
-                log(&format!(
-                    "forward vk {vk:#x} by SendInput: front {front}, sent {sent}, back {back}"
-                ));
+    // repeat 1, scan code, extended bit (these are all extended keys)
+    let down = 1 | (scan as isize) << 16 | 1 << 24;
+    let up = down | 1 << 30 | 1 << 31;
+    let ok = unsafe {
+        PostMessageW(target, WM_KEYDOWN, vk as WPARAM, down) != 0
+            && PostMessageW(target, WM_KEYUP, vk as WPARAM, up) != 0
+    };
+    log(&format!("forward vk {vk:#x} to {target:?}: {ok}"));
+}
+
+// MARK: tray
+
+fn on_tray_command(app: &mut App, command: Command) {
+    match command {
+        Command::ToggleDrawing if app.active => hide(app),
+        Command::ToggleDrawing => show(app),
+        Command::ToggleGhost if app.active => set_ghost(app, !app.ghost),
+        Command::ToggleGhost => {}
+        Command::ToggleWhiteboard => {
+            app.state.whiteboard = !app.state.whiteboard;
+            if app.active {
+                refresh_all(app);
             }
         }
+        Command::ToggleCaptureHiding => set_capture_hiding(app, !app.hide_palette_from_capture),
+        Command::SetDim(i) => {
+            app.state.dim = DIM_LEVELS.get(i).map_or(0.0, |(level, _)| *level);
+            if app.active {
+                refresh_all(app);
+            }
+        }
+        Command::SetFade(i) => {
+            app.state.auto_fade = i.and_then(|i| FADE_SECONDS.get(i).copied());
+            if app.active {
+                refresh_all(app);
+            }
+        }
+        Command::Quit => unsafe { PostQuitMessage(0) },
     }
+}
+
+fn menu_state(app: &App) -> MenuState {
+    MenuState {
+        mode: mode(app),
+        whiteboard: app.state.whiteboard,
+        hide_from_capture: app.hide_palette_from_capture,
+        dim: DIM_LEVELS
+            .iter()
+            .position(|(l, _)| *l == app.state.dim)
+            .unwrap_or(0),
+        fade: app
+            .state
+            .auto_fade
+            .and_then(|s| FADE_SECONDS.iter().position(|f| *f == s)),
+        toggle_key: chord_text(app, Action::ToggleDrawing),
+        quit_key: chord_text(app, Action::Quit),
+    }
+}
+
+/// Tray window messages. The menu runs a modal loop, so it's shown with the app
+/// state released and the picked command is applied afterwards.
+fn on_tray_message(hwnd: HWND, msg: u32, lparam: LPARAM) -> bool {
+    let mut menu = None;
+    let mut taskbar_created = 0;
+    with_app(|app| {
+        if hwnd == app.tray_hwnd {
+            menu = Some(menu_state(app));
+            taskbar_created = app.taskbar_created;
+        }
+    });
+    let Some(menu) = menu else { return false };
+    match msg {
+        WM_TRAY => match lparam as u32 {
+            WM_LBUTTONUP => with_app(|app| on_tray_command(app, Command::ToggleDrawing)),
+            WM_RBUTTONUP | WM_CONTEXTMENU => {
+                if let Some(command) = Tray::menu(hwnd, &menu) {
+                    with_app(|app| on_tray_command(app, command));
+                }
+            }
+            _ => {}
+        },
+        WM_SECOND_INSTANCE => with_app(|app| {
+            let key = chord_text(app, Action::ToggleDrawing);
+            app.tray.notify(
+                "screenpen is already running",
+                &format!("{key} or click the tray icon to draw."),
+            );
+        }),
+        m if m == taskbar_created => with_app(|app| {
+            let ok = app.tray.add();
+            log(&format!("explorer restarted, tray icon re-added: {ok}"));
+        }),
+        _ => return false,
+    }
+    true
 }
 
 // MARK: window procedure
@@ -859,7 +881,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 x: (lparam & 0xffff) as i16 as i32,
                 y: ((lparam >> 16) & 0xffff) as i16 as i32,
             };
-            let first_button = (wparam >> 16) & POINTER_FLAG_FIRSTBUTTON != 0;
+            let flags = (wparam >> 16) & 0xffff;
             with_app(|app| {
                 handled = Some(0);
                 if hwnd == app.palette {
@@ -868,16 +890,65 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     }
                     return;
                 }
-                let Some(index) = app.overlays.iter().position(|o| o.hwnd == hwnd) else {
-                    return;
-                };
-                on_pointer(app, index, msg, p, first_button);
+                if let Some(index) = app.overlays.iter().position(|o| o.hwnd == hwnd) {
+                    on_pointer(app, index, msg, p, flags);
+                }
             });
         }
-        WM_KEYDOWN => with_app(|app| {
+        WM_POINTERWHEEL => with_app(|app| {
+            let Some(index) = app.overlays.iter().position(|o| o.hwnd == hwnd) else {
+                return;
+            };
+            handled = Some(0);
+            let (ctrl, _, _) = keys::modifiers();
+            if ctrl {
+                let delta = ((wparam >> 16) & 0xffff) as i16;
+                let action = if delta > 0 {
+                    Action::Thicker
+                } else {
+                    Action::Thinner
+                };
+                run_action(app, index, action);
+            }
+        }),
+        WM_KEYDOWN | WM_SYSKEYDOWN => with_app(|app| {
             if let Some(index) = app.overlays.iter().position(|o| o.hwnd == hwnd) {
                 on_key(app, index, wparam as u16);
+                // Swallow Alt combos too, so they don't beep or open a system menu.
                 handled = Some(0);
+            }
+        }),
+        WM_CHAR | WM_SYSCHAR => with_app(|app| {
+            let Some(index) = app.overlays.iter().position(|o| o.hwnd == hwnd) else {
+                return;
+            };
+            handled = Some(0);
+            let o = &mut app.overlays[index];
+            if o.canvas.is_typing()
+                && let Some(c) = char::from_u32(wparam as u32)
+            {
+                let r = o.canvas.type_char(c);
+                paint(o, r);
+            }
+        }),
+        WM_SETCURSOR => with_app(|app| {
+            if app.overlays.iter().any(|o| o.hwnd == hwnd) {
+                let cursor = match app.state.tool {
+                    ToolKind::Select => IDC_ARROW,
+                    ToolKind::Text => IDC_IBEAM,
+                    _ => IDC_CROSS,
+                };
+                unsafe { SetCursor(LoadCursorW(null_mut(), cursor)) };
+                handled = Some(1);
+            }
+        }),
+        WM_TIMER if wparam == FADE_TIMER => with_app(|app| {
+            handled = Some(0);
+            for o in &mut app.overlays {
+                let (repaint, _) = o.canvas.tick();
+                if repaint != Repaint::None {
+                    paint(o, repaint);
+                }
             }
         }),
         WM_MOUSEACTIVATE => with_app(|app| {
@@ -898,28 +969,70 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     handled.unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
 }
 
-fn on_pointer(app: &mut App, index: usize, msg: u32, screen: POINT, first_button: bool) {
-    let swatch = app.swatch;
-    let o = &mut app.overlays[index];
-    let p = (
-        (screen.x - o.monitor.left) as f32,
-        (screen.y - o.monitor.top) as f32,
-    );
-    match msg {
-        WM_POINTERDOWN if first_button && !app.ghost => {
-            app.drawing = Some(index);
-            o.strokes.push((swatch, vec![p]));
-            render_segment(o);
-        }
-        WM_POINTERUPDATE if app.drawing == Some(index) => {
-            if let Some((_, points)) = o.strokes.last_mut() {
-                points.push(p);
-            }
-            render_segment(o);
-        }
-        WM_POINTERUP if app.drawing == Some(index) => app.drawing = None,
-        _ => {}
+fn on_pointer(app: &mut App, index: usize, msg: u32, screen: POINT, flags: usize) {
+    if app.ghost {
+        return;
     }
+    let (ctrl, alt, shift) = keys::modifiers();
+    let o = &app.overlays[index];
+    let mut pointer = Pointer {
+        x: (screen.x - o.monitor.left) as f32,
+        y: (screen.y - o.monitor.top) as f32,
+        pressure: 1.0,
+        mods: Mods { ctrl, alt, shift },
+        double_click: false,
+    };
+    let repaint = match msg {
+        WM_POINTERDOWN if app.pressed.is_none() => {
+            let button = if flags & POINTER_FLAG_SECONDBUTTON != 0 {
+                Button::Right
+            } else if flags & POINTER_FLAG_FIRSTBUTTON != 0 {
+                Button::Left
+            } else {
+                return;
+            };
+            pointer.double_click = button == Button::Left && is_double_click(app, screen);
+            app.pressed = Some((index, button));
+            let hwnd = app.overlays[index].hwnd;
+            unsafe {
+                SetCapture(hwnd);
+                // Keys go to the screen being drawn on.
+                if GetForegroundWindow() != hwnd {
+                    SetForegroundWindow(hwnd);
+                }
+            }
+            app.overlays[index]
+                .canvas
+                .pointer_down(&app.state, pointer, button)
+        }
+        WM_POINTERUPDATE => match app.pressed {
+            Some((i, _)) if i == index => {
+                app.overlays[index].canvas.pointer_move(&app.state, pointer)
+            }
+            Some(_) => return,
+            None => app.overlays[index].canvas.hover(&app.state, pointer),
+        },
+        WM_POINTERUP => match app.pressed {
+            Some((i, _)) if i == index => {
+                app.pressed = None;
+                unsafe { ReleaseCapture() };
+                app.overlays[index].canvas.pointer_up(&app.state, pointer)
+            }
+            _ => return,
+        },
+        _ => return,
+    };
+    paint(&mut app.overlays[index], repaint);
+}
+
+fn is_double_click(app: &mut App, p: POINT) -> bool {
+    let now = Instant::now();
+    let limit = std::time::Duration::from_millis(unsafe { GetDoubleClickTime() } as u64);
+    let double = app.last_click.is_some_and(|(t, q)| {
+        now.duration_since(t) <= limit && (q.x - p.x).abs() <= 4 && (q.y - p.y).abs() <= 4
+    });
+    app.last_click = if double { None } else { Some((now, p)) };
+    double
 }
 
 // MARK: log

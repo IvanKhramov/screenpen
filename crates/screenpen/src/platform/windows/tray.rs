@@ -16,12 +16,13 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
-    HICON, ICONINFO, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, PostMessageW,
+    HICON, ICONINFO, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, PostMessageW,
     SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
     WM_NULL,
 };
 
 use super::surface::bgra;
+use crate::state::{DIM_LEVELS, FADE_SECONDS};
 
 /// Sent by the shell for clicks on the icon; `lParam` holds the mouse message.
 pub const WM_TRAY: u32 = WM_APP + 1;
@@ -39,8 +40,23 @@ pub enum Mode {
 pub enum Command {
     ToggleDrawing,
     ToggleGhost,
+    ToggleWhiteboard,
     ToggleCaptureHiding,
+    SetDim(usize),
+    /// Index into `FADE_SECONDS`, or off.
+    SetFade(Option<usize>),
     Quit,
+}
+
+/// What the menu shows checked.
+pub struct MenuState {
+    pub mode: Mode,
+    pub whiteboard: bool,
+    pub hide_from_capture: bool,
+    pub dim: usize,
+    pub fade: Option<usize>,
+    pub toggle_key: String,
+    pub quit_key: String,
 }
 
 pub struct Tray {
@@ -86,28 +102,54 @@ impl Tray {
 
     /// Shows the context menu at the cursor and returns the picked command.
     /// Must be called with the app state released: the menu runs a modal loop.
-    pub fn menu(hwnd: HWND, mode: Mode, hide_from_capture: bool) -> Option<Command> {
+    pub fn menu(hwnd: HWND, m: &MenuState) -> Option<Command> {
         let check = |on: bool| if on { MF_CHECKED } else { 0 };
         unsafe {
-            let menu = CreatePopupMenu();
-            let item = |flags, id: usize, text: &str| {
+            let add = |menu, flags, id: usize, text: &str| {
                 let text = super::wide(text);
-                AppendMenuW(menu, MF_STRING | flags, id, text.as_ptr());
+                AppendMenuW(menu, flags, id, text.as_ptr());
             };
-            item(check(mode != Mode::Idle), 1, "Draw\tCtrl+Alt+Shift+A");
-            let ghost_flags = if mode == Mode::Idle { MF_GRAYED } else { 0 };
-            item(
-                ghost_flags | check(mode == Mode::Ghost),
+            let menu = CreatePopupMenu();
+            add(
+                menu,
+                MF_STRING | check(m.mode != Mode::Idle),
+                1,
+                &format!("Draw\t{}", m.toggle_key),
+            );
+            let ghost_flags = if m.mode == Mode::Idle { MF_GRAYED } else { 0 };
+            add(
+                menu,
+                MF_STRING | ghost_flags | check(m.mode == Mode::Ghost),
                 2,
                 "Ghost mode (click through)\tG",
             );
-            item(
-                check(hide_from_capture),
-                3,
+            add(menu, MF_STRING | check(m.whiteboard), 3, "Whiteboard\tW");
+            AppendMenuW(menu, MF_SEPARATOR, 0, null());
+
+            let dim = CreatePopupMenu();
+            for (i, (_, name)) in DIM_LEVELS.iter().enumerate() {
+                add(dim, MF_STRING | check(m.dim == i), 100 + i, name);
+            }
+            add(menu, MF_POPUP, dim as usize, "Dim screen while drawing");
+            let fade = CreatePopupMenu();
+            add(fade, MF_STRING | check(m.fade.is_none()), 200, "Off");
+            for (i, seconds) in FADE_SECONDS.iter().enumerate() {
+                add(
+                    fade,
+                    MF_STRING | check(m.fade == Some(i)),
+                    201 + i,
+                    &format!("After {seconds} s"),
+                );
+            }
+            add(menu, MF_POPUP, fade as usize, "Fade drawings");
+            add(
+                menu,
+                MF_STRING | check(m.hide_from_capture),
+                4,
                 "Hide palette from screen sharing",
             );
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
-            item(0, 4, "Quit\tCtrl+Alt+Shift+Q");
+            add(menu, MF_STRING, 5, &format!("Quit\t{}", m.quit_key));
 
             let mut p = POINT { x: 0, y: 0 };
             GetCursorPos(&mut p);
@@ -123,12 +165,16 @@ impl Tray {
                 null(),
             );
             PostMessageW(hwnd, WM_NULL, 0, 0);
-            DestroyMenu(menu);
-            match picked {
+            DestroyMenu(menu); // destroys the submenus too
+            match picked as usize {
                 1 => Some(Command::ToggleDrawing),
                 2 => Some(Command::ToggleGhost),
-                3 => Some(Command::ToggleCaptureHiding),
-                4 => Some(Command::Quit),
+                3 => Some(Command::ToggleWhiteboard),
+                4 => Some(Command::ToggleCaptureHiding),
+                5 => Some(Command::Quit),
+                n @ 100..=199 => Some(Command::SetDim(n - 100)),
+                200 => Some(Command::SetFade(None)),
+                n @ 201..=299 => Some(Command::SetFade(Some(n - 201))),
                 _ => None,
             }
         }

@@ -311,10 +311,10 @@ pub fn draw(pixmap: &mut PixmapMut, a: &Annotation, transform: Transform, order:
             None,
         );
     }
-    let blend_mode = match a.style.blend {
-        Blend::Normal => tiny_skia::BlendMode::SourceOver,
-        Blend::Multiply => tiny_skia::BlendMode::Multiply,
-    };
+    // An overlay window has no desktop pixels under the ink, only its own background
+    // (often black when dimming), so multiply would just darken it. The highlighter's
+    // look comes from its opacity; Multiply is kept in the model for exporters.
+    let blend_mode = tiny_skia::BlendMode::SourceOver;
     let layer_paint = PixmapPaint {
         opacity,
         blend_mode,
