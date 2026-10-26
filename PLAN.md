@@ -163,3 +163,12 @@ StrokeBuilder, PressureFilter, рендер всех видов в tiny-skia, т
 `WDA_EXCLUDEFROMCAPTURE` + BitBlt), снимок экрана с рисунком (Ctrl+S, PNG в
 Изображения\screenpen и CF_DIB в буфер обмена). Не сделано из v2: лупа, галерея
 снапшотов с восстановлением, экспорт в PDF.
+
+2026-10-26: фаза 5 (macOS) собрана, ждёт проверки на железе. Панель NSPanel non-activating на
+каждый экран (уровень screenSaver, все Spaces), вывод через drawRect с копией только грязного
+прямоугольника, хоткеи через Carbon, статус-айтем с тем же меню, палитра, шпаргалка (скрыта из
+захвата через `sharingType`), freeze и снимок через `CGWindowListCreateImage` под нашими окнами
+(нужно разрешение Screen Recording), автозапуск через LaunchAgent, один экземпляр через lock-файл
+с pid и версией. Уведомления показываются своей плашкой под иконкой (системные просят
+разрешения). Нет пересылки PgUp/PgDn/стрелок в окно позади: на macOS для этого нужен доступ
+Accessibility. `scripts/bundle-macos.sh` собирает `screenpen.app`, CI выкладывает zip.

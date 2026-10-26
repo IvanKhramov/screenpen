@@ -31,10 +31,27 @@ jobs:
         with:
           name: screenpen-windows-x64
           path: target/release/screenpen.exe
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo clippy -p screenpen -- -D warnings
+      - run: cargo test -p screenpen
+      - run: cargo build --release -p screenpen
+        env:
+          SCREENPEN_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+      - run: scripts/bundle-macos.sh
+        env:
+          SCREENPEN_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+      - run: ditto -c -k --keepParent target/release/screenpen.app screenpen-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenpen-macos-arm64
+          path: screenpen-macos-arm64.zip
   release:
-    # Push a tag like v0.1.0-alpha.1 to publish the exe as a GitHub release.
+    # Push a tag like v0.1.0-alpha.1 to publish the exe and the app as a GitHub release.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [core, windows]
+    needs: [core, windows, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -42,11 +59,15 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: screenpen-windows-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: screenpen-macos-arm64
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           mv screenpen.exe "screenpen-$TAG-windows-x64.exe"
+          mv screenpen-macos-arm64.zip "screenpen-$TAG-macos-arm64.zip"
           flags="--generate-notes"
           case "$TAG" in *-*) flags="$flags --prerelease";; esac
-          gh release create "$TAG" "screenpen-$TAG-windows-x64.exe" -R "$GITHUB_REPOSITORY" --title "$TAG" $flags
+          gh release create "$TAG" "screenpen-$TAG-windows-x64.exe" "screenpen-$TAG-macos-arm64.zip" -R "$GITHUB_REPOSITORY" --title "$TAG" $flags
