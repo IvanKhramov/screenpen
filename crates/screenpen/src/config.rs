@@ -121,7 +121,8 @@ impl Settings {
         }
         let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
         // Write then rename, so a crash never leaves half a file.
-        let tmp = path.with_extension("toml.tmp");
+        // Per-process name: the settings window and the app may save at the same time.
+        let tmp = path.with_extension(format!("toml.{}.tmp", std::process::id()));
         std::fs::write(&tmp, text)?;
         std::fs::rename(tmp, path)
     }

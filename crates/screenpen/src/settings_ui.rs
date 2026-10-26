@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use eframe::egui::{self, Color32, RichText};
 use screenpen_core::{Action, Chord, Key, Rgba, Shortcuts};
 
-use crate::config::{PaletteSettings, Settings, default_path, parse_hex};
+use crate::config::{Settings, default_path, parse_hex};
 use crate::i18n::Lang;
 use crate::palette::{Item, chord_label};
 use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState};
@@ -50,6 +50,26 @@ struct SettingsApp {
     /// SCREENPEN_SETTINGS_SHOT=<dir>: save a PNG of each tab and quit (for checking
     /// the layout without a person at the screen).
     shot: Option<(PathBuf, u32)>,
+    /// Modification time of the file as last read or written.
+    loaded: Option<std::time::SystemTime>,
+    checked: std::time::Instant,
+}
+
+#[derive(Clone, PartialEq)]
+struct Edited {
+    language: String,
+    colors: [Rgba; 9],
+    width: f32,
+    dim: f32,
+    fade: Option<f32>,
+    hide_palette: bool,
+    shortcuts: Shortcuts,
+    items: Vec<String>,
+    vertical: bool,
+}
+
+fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Picks the English or Russian text.
@@ -64,6 +84,7 @@ impl SettingsApp {
         let mut problems = settings.apply(&mut state);
         problems.extend(error);
         let status = (!problems.is_empty()).then(|| problems.join("\n"));
+        let loaded = modified(&path);
         SettingsApp {
             path,
             settings,
@@ -72,6 +93,8 @@ impl SettingsApp {
             recording: None,
             status,
             shot: std::env::var_os("SCREENPEN_SETTINGS_SHOT").map(|dir| (PathBuf::from(dir), 0)),
+            loaded,
+            checked: std::time::Instant::now(),
         }
     }
 
@@ -79,38 +102,112 @@ impl SettingsApp {
         self.settings.lang(crate::platform::system_lang())
     }
 
-    /// Writes the edited settings, keeping what the running app changes on its own
-    /// (current tool, color, palette position) as it is on disk now.
-    fn save(&mut self) {
-        let (disk, _) = Settings::load(&self.path);
-        let mut on_disk = ToolState::default();
-        disk.apply(&mut on_disk);
-        self.state.tool = on_disk.tool;
-        self.state.color_index = on_disk.color_index;
-        let palette = PaletteSettings {
-            x: disk.palette.x,
-            y: disk.palette.y,
-            ..self.settings.palette.clone()
-        };
+    /// What the user can change here, to tell which fields a frame changed.
+    fn edited(&self) -> Edited {
+        Edited {
+            language: self.settings.language.clone(),
+            colors: self.state.colors,
+            width: self.state.width,
+            dim: self.state.dim,
+            fade: self.state.auto_fade,
+            hide_palette: self.settings.hide_palette_from_capture,
+            shortcuts: self.state.shortcuts.clone(),
+            items: self.settings.palette.items.clone(),
+            vertical: self.settings.palette.vertical,
+        }
+    }
+
+    /// Writes only the fields that changed onto a fresh copy of the file, so changes
+    /// the running app made meanwhile (width from the wheel, tray toggles, the palette
+    /// position) survive.
+    fn save(&mut self, before: &Edited) {
+        let now = self.edited();
+        if &now == before {
+            return;
+        }
+        let (mut disk, error) = Settings::load(&self.path);
+        if let Some(e) = error.filter(|_| self.path.exists()) {
+            self.status = Some(e);
+            return;
+        }
+        let mut state = ToolState::default();
+        disk.apply(&mut state);
+        if now.language != before.language {
+            disk.language = now.language.clone();
+        }
+        if now.colors != before.colors {
+            state.colors = now.colors;
+        }
+        if now.width != before.width {
+            state.width = now.width;
+        }
+        if now.dim != before.dim {
+            state.dim = now.dim;
+        }
+        if now.fade != before.fade {
+            state.auto_fade = now.fade;
+        }
+        if now.hide_palette != before.hide_palette {
+            disk.hide_palette_from_capture = now.hide_palette;
+        }
+        if now.shortcuts != before.shortcuts {
+            state.shortcuts = now.shortcuts.clone();
+        }
+        if now.items != before.items {
+            disk.palette.items = now.items.clone();
+        }
+        if now.vertical != before.vertical {
+            disk.palette.vertical = now.vertical;
+        }
         let settings = Settings::capture(
-            &self.state,
-            &palette,
-            &self.settings.language,
-            self.settings.hide_palette_from_capture,
+            &state,
+            &disk.palette,
+            &disk.language,
+            disk.hide_palette_from_capture,
         );
         match settings.save(&self.path) {
             Ok(()) => {
                 self.settings = settings;
+                self.state = state;
                 self.status = None;
+                self.loaded = modified(&self.path);
                 crate::platform::notify_settings_changed();
             }
             Err(e) => self.status = Some(format!("{}: {e}", self.path.display())),
+        }
+    }
+
+    /// Picks up changes the running app wrote (checked about once a second).
+    fn refresh(&mut self) {
+        if self.recording.is_some() || self.checked.elapsed() < std::time::Duration::from_secs(1) {
+            return;
+        }
+        self.checked = std::time::Instant::now();
+        let stamp = modified(&self.path);
+        if stamp != self.loaded {
+            let fresh = SettingsApp::load(self.path.clone());
+            self.settings = fresh.settings;
+            self.state = fresh.state;
+            self.status = fresh.status;
+            self.loaded = stamp;
         }
     }
 }
 
 impl eframe::App for SettingsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.refresh();
+        let before = self.edited();
+        self.draw(ui);
+        self.save(&before);
+        // Keep polling for changes from the running app.
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(1));
+    }
+}
+
+impl SettingsApp {
+    fn draw(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang();
         self.take_shot(ui);
         if self.recording.is_some() {
@@ -296,9 +393,7 @@ impl SettingsApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new(self.path.display().to_string()).weak());
         });
-        if changed {
-            self.save();
-        }
+        if changed {}
     }
 }
 
@@ -385,9 +480,7 @@ impl SettingsApp {
             self.recording = None;
             changed = true;
         }
-        if changed {
-            self.save();
-        }
+        if changed {}
     }
 
     /// Takes the next key press as the chord for the action being recorded.
@@ -419,7 +512,6 @@ impl SettingsApp {
                 return;
             }
             self.state.shortcuts.set(action, Some(chord));
-            self.save();
             return;
         }
     }
@@ -558,7 +650,6 @@ impl SettingsApp {
                 items = Item::defaults();
             }
             self.settings.palette.items = items.iter().map(|i| i.name()).collect();
-            self.save();
         }
     }
 }
@@ -582,5 +673,27 @@ mod tests {
         for c in Rgba::PALETTE {
             assert_eq!(hex(from_rgb(to_rgb(c))), hex(c));
         }
+    }
+
+    #[test]
+    fn saving_keeps_what_the_app_changed_meanwhile() {
+        let dir = std::env::temp_dir().join(format!("screenpen-merge-{}", std::process::id()));
+        let path = dir.join("settings.toml");
+        Settings::default().save(&path).unwrap();
+        let mut window = SettingsApp::load(path.clone());
+        // The running app dims the screen and rotates the palette...
+        let mut app_side = Settings::load(&path).0;
+        app_side.dim = 0.45;
+        app_side.palette.vertical = true;
+        app_side.save(&path).unwrap();
+        // ...while the settings window, opened earlier, changes the width.
+        let before = window.edited();
+        window.state.width = 9.0;
+        window.save(&before);
+        let merged = Settings::load(&path).0;
+        assert_eq!(merged.width, 9.0);
+        assert_eq!(merged.dim, 0.45);
+        assert!(merged.palette.vertical);
+        std::fs::remove_dir_all(dir).ok();
     }
 }
