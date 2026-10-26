@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=screenpen
+Comment=Draw on top of the screen during presentations
+Exec=screenpen
+Terminal=false
+Categories=Utility;Presentation;
+Keywords=draw;annotate;presentation;pen;
+StartupNotify=false

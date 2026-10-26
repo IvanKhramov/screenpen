@@ -31,10 +31,28 @@ jobs:
         with:
           name: screenpen-windows-x64
           path: target/release/screenpen.exe
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release -p screenpen
+        env:
+          # Shown in the tray menu; a running copy of another version gets replaced.
+          SCREENPEN_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+      - name: Package
+        run: |
+          mkdir -p dist/screenpen
+          cp target/release/screenpen dist/screenpen/
+          cp crates/screenpen/src/platform/linux/screenpen.desktop dist/screenpen/
+          tar -czf screenpen-linux-x64.tar.gz -C dist screenpen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenpen-linux-x64
+          path: screenpen-linux-x64.tar.gz
   release:
     # Push a tag like v0.1.0-alpha.1 to publish the exe as a GitHub release.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [core, windows]
+    needs: [core, windows, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -42,11 +60,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: screenpen-windows-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: screenpen-linux-x64
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           mv screenpen.exe "screenpen-$TAG-windows-x64.exe"
+          mv screenpen-linux-x64.tar.gz "screenpen-$TAG-linux-x64.tar.gz"
           flags="--generate-notes"
           case "$TAG" in *-*) flags="$flags --prerelease";; esac
-          gh release create "$TAG" "screenpen-$TAG-windows-x64.exe" -R "$GITHUB_REPOSITORY" --title "$TAG" $flags
+          gh release create "$TAG" "screenpen-$TAG-windows-x64.exe" \
+            "screenpen-$TAG-linux-x64.tar.gz" -R "$GITHUB_REPOSITORY" --title "$TAG" $flags

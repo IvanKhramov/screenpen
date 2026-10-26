@@ -34,3 +34,13 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+libc = "0.2"
+rustix = { version = "1", features = ["event"] }
+sctk = { package = "smithay-client-toolkit", version = "0.19", default-features = false }
+x11rb = { version = "0.13", features = ["randr", "shape", "xkb", "xtest"] }
+xkbcommon-dl = "0.4"
+xkeysym = "0.2"
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }

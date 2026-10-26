@@ -3,7 +3,7 @@
 Draw on top of the screen during presentations, demos and screen recordings.
 A Rust port of [ScreenInk](https://github.com/volyx/ScreenInk) by volyx, ported with the author's permission.
 
-Status: early. Windows 11 first, then macOS and Linux. See [PLAN.md](PLAN.md).
+Status: early. Windows 11 and Linux (X11, Wayland with layer-shell), macOS next. See [PLAN.md](PLAN.md).
 
 ## Try it on Windows
 
@@ -48,6 +48,19 @@ Hold the right mouse button (or use the pen's eraser end) to erase with any tool
 Keys are physical: P is the pen on any keyboard layout.
 
 The log goes to `%TEMP%\screenpen.log`.
+
+## Linux
+
+Download `screenpen-<version>-linux-x64.tar.gz` from Releases, unpack it and run `screenpen`
+(copy `screenpen.desktop` to `~/.local/share/applications` for a menu entry).
+
+- X11 needs a compositing manager for a see-through overlay; without one the screen goes black while drawing.
+- KDE Plasma, Sway and Hyprland on Wayland get native overlays. Wayland has no global hotkeys:
+  bind `screenpen --toggle` to a shortcut in your desktop settings, or use the tray icon.
+  Freeze, the screen under a snapshot and passing PageUp/PageDown to the app behind need X11.
+- GNOME on Wayland runs screenpen through XWayland; native Wayland windows may stay above the drawing.
+  The tray icon on GNOME needs the AppIndicator extension.
+- Settings are in `~/.config/screenpen/settings.toml`, the log in `$XDG_RUNTIME_DIR/screenpen.log`.
 
 ## License
 
