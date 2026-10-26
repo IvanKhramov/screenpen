@@ -141,6 +141,8 @@ struct App {
     /// Overlay index of the gesture in progress.
     pressed: Option<usize>,
     hide_palette_from_capture: bool,
+    /// The settings file failed to parse: don't overwrite it.
+    settings_broken: bool,
     tray: Tray,
     target: Retained<Target>,
     hotkeys: HotKeys,
@@ -198,6 +200,7 @@ pub fn run() {
         eraser: false,
         pressed: None,
         hide_palette_from_capture: false,
+        settings_broken: false,
         tray: Tray::new(mtm, &target),
         target,
         hotkeys: HotKeys::new(),
@@ -314,8 +317,17 @@ pub fn system_lang() -> Lang {
 fn load_settings(app: &mut App) {
     let (settings, error) = Settings::load(&app.settings_path);
     if let Some(e) = error {
-        log(&format!("settings not loaded, using defaults: {e}"));
+        // Keep what we have and stop saving until the file is fixed, or the next
+        // save would replace the user's file with defaults.
+        log(&format!("settings not loaded, keeping current ones: {e}"));
+        if !app.settings_broken {
+            let l = app.lang;
+            notify(app, l.t(T::SettingsBroken), &e);
+        }
+        app.settings_broken = true;
+        return;
     }
+    app.settings_broken = false;
     let before = app.state.shortcuts.clone();
     let mut state = ToolState {
         whiteboard: app.state.whiteboard,
@@ -350,6 +362,10 @@ fn load_settings(app: &mut App) {
 }
 
 fn save_settings(app: &App) {
+    if app.settings_broken {
+        log("settings file has errors; not saving over it");
+        return;
+    }
     let p = &app.palette;
     let palette = PaletteSettings {
         items: p.palette.items.iter().map(|i| i.name()).collect(),
@@ -371,6 +387,10 @@ fn save_settings(app: &App) {
 /// Opens the settings window, a separate process of the same binary, or brings the
 /// one already open to the front.
 fn open_settings(app: &mut App) {
+    // A normal window would open under the screen-saver-level overlay and be unreachable.
+    if app.active {
+        hide(app);
+    }
     save_settings(app);
     if let Some(child) = &mut app.settings_window
         && let Ok(None) = child.try_wait()

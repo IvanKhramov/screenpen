@@ -195,8 +195,8 @@ pub fn fill_menu(mtm: MainThreadMarker, menu: &NSMenu, target: &Target, m: &Menu
     add(menu, 4, l.t(T::HidePalette), m.hide_from_capture, true);
     separator(menu);
     // The string names Windows; the rest of it fits macOS as is.
-    let autostart = l.t(T::Autostart).replace("Windows", "macOS");
-    add(menu, 7, &autostart, m.autostart, true);
+    let autostart = l.t(T::Autostart);
+    add(menu, 7, autostart, m.autostart, true);
     add(menu, 6, l.t(T::Settings), false, true);
     let quit = format!("{}    {}", l.t(T::Quit), m.quit_key);
     add(menu, 5, &quit, false, true);
