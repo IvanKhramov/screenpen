@@ -22,6 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::surface::bgra;
+use crate::i18n::{Lang, T};
 use crate::state::{DIM_LEVELS, FADE_SECONDS};
 
 /// Sent by the shell for clicks on the icon; `lParam` holds the mouse message.
@@ -47,11 +48,13 @@ pub enum Command {
     SetDim(usize),
     /// Index into `FADE_SECONDS`, or off.
     SetFade(Option<usize>),
+    Settings,
     Quit,
 }
 
 /// What the menu shows checked.
 pub struct MenuState {
+    pub lang: Lang,
     pub version: String,
     pub mode: Mode,
     pub whiteboard: bool,
@@ -66,6 +69,9 @@ pub struct Tray {
     hwnd: HWND,
     icons: [HICON; 3],
     mode: Mode,
+    lang: Lang,
+    /// Chords shown in the tooltip: start drawing, leave ghost mode.
+    keys: (String, String),
 }
 
 impl Tray {
@@ -75,6 +81,8 @@ impl Tray {
             hwnd,
             icons,
             mode: Mode::Idle,
+            lang: Lang::En,
+            keys: Default::default(),
         };
         tray.add();
         tray
@@ -85,6 +93,13 @@ impl Tray {
         let mut data = self.data(NIF_MESSAGE | NIF_ICON | NIF_TIP);
         data.uCallbackMessage = WM_TRAY;
         unsafe { Shell_NotifyIconW(NIM_ADD, &data) != 0 }
+    }
+
+    pub fn set_text(&mut self, lang: Lang, keys: (String, String)) {
+        self.lang = lang;
+        self.keys = keys;
+        let data = self.data(NIF_TIP);
+        unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
     }
 
     pub fn set_mode(&mut self, mode: Mode) {
@@ -115,46 +130,55 @@ impl Tray {
             let menu = CreatePopupMenu();
             add(menu, MF_STRING | MF_GRAYED, 0, &m.version);
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
+            let l = m.lang;
             add(
                 menu,
                 MF_STRING | check(m.mode != Mode::Idle),
                 1,
-                &format!("Draw\t{}", m.toggle_key),
+                &format!("{}\t{}", l.t(T::Draw), m.toggle_key),
             );
             let ghost_flags = if m.mode == Mode::Idle { MF_GRAYED } else { 0 };
             add(
                 menu,
                 MF_STRING | ghost_flags | check(m.mode == Mode::Ghost),
                 2,
-                "Ghost mode (click through)\tG",
+                l.t(T::GhostMenu),
             );
-            add(menu, MF_STRING | check(m.whiteboard), 3, "Whiteboard\tW");
+            add(menu, MF_STRING | check(m.whiteboard), 3, l.t(T::Whiteboard));
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
 
             let dim = CreatePopupMenu();
-            for (i, (_, name)) in DIM_LEVELS.iter().enumerate() {
-                add(dim, MF_STRING | check(m.dim == i), 100 + i, name);
+            let dim_names = [T::DimOff, T::DimSlightly, T::DimMedium, T::DimStrongly];
+            for (i, name) in dim_names.iter().enumerate().take(DIM_LEVELS.len()) {
+                add(dim, MF_STRING | check(m.dim == i), 100 + i, l.t(*name));
             }
-            add(menu, MF_POPUP, dim as usize, "Dim screen while drawing");
+            add(menu, MF_POPUP, dim as usize, l.t(T::DimMenu));
             let fade = CreatePopupMenu();
-            add(fade, MF_STRING | check(m.fade.is_none()), 200, "Off");
+            add(
+                fade,
+                MF_STRING | check(m.fade.is_none()),
+                200,
+                l.t(T::FadeOff),
+            );
             for (i, seconds) in FADE_SECONDS.iter().enumerate() {
-                add(
-                    fade,
-                    MF_STRING | check(m.fade == Some(i)),
-                    201 + i,
-                    &format!("After {seconds} s"),
-                );
+                let text = l.t(T::FadeAfter).replace("{n}", &seconds.to_string());
+                add(fade, MF_STRING | check(m.fade == Some(i)), 201 + i, &text);
             }
-            add(menu, MF_POPUP, fade as usize, "Fade drawings");
+            add(menu, MF_POPUP, fade as usize, l.t(T::FadeMenu));
             add(
                 menu,
                 MF_STRING | check(m.hide_from_capture),
                 4,
-                "Hide palette from screen sharing",
+                l.t(T::HidePalette),
             );
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
-            add(menu, MF_STRING, 5, &format!("Quit\t{}", m.quit_key));
+            add(menu, MF_STRING, 6, l.t(T::Settings));
+            add(
+                menu,
+                MF_STRING,
+                5,
+                &format!("{}\t{}", l.t(T::Quit), m.quit_key),
+            );
 
             let mut p = POINT { x: 0, y: 0 };
             GetCursorPos(&mut p);
@@ -177,6 +201,7 @@ impl Tray {
                 3 => Some(Command::ToggleWhiteboard),
                 4 => Some(Command::ToggleCaptureHiding),
                 5 => Some(Command::Quit),
+                6 => Some(Command::Settings),
                 n @ 100..=199 => Some(Command::SetDim(n - 100)),
                 200 => Some(Command::SetFade(None)),
                 n @ 201..=299 => Some(Command::SetFade(Some(n - 201))),
@@ -193,11 +218,11 @@ impl Tray {
         data.uFlags = flags;
         data.hIcon = self.icons[self.mode as usize];
         let tip = match self.mode {
-            Mode::Idle => "screenpen: Ctrl+Alt+Shift+A to draw",
-            Mode::Drawing => "screenpen: drawing (Esc to stop)",
-            Mode::Ghost => "screenpen: ghost mode (Ctrl+Alt+Shift+G to draw)",
+            Mode::Idle => self.lang.t(T::TipIdle).replace("{key}", &self.keys.0),
+            Mode::Drawing => self.lang.t(T::TipDrawing).to_string(),
+            Mode::Ghost => self.lang.t(T::TipGhost).replace("{key}", &self.keys.1),
         };
-        copy(&mut data.szTip, tip);
+        copy(&mut data.szTip, &tip);
         data
     }
 }

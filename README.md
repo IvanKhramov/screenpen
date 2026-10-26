@@ -14,7 +14,14 @@ cargo run --release -p screenpen
 ```
 
 screenpen lives in the tray: the icon is yellow when idle, red while drawing and purple in ghost mode.
-Left click toggles drawing, right click opens the menu (whiteboard, dimming, fading, quit).
+Left click toggles drawing, right click opens the menu (whiteboard, dimming, fading, settings, quit).
+
+The palette shows a tooltip with the name and key of every button. Drag it by the dotted grip
+(it snaps to screen edges); double-click the grip to turn it vertical. Press `?` for all shortcuts.
+
+Settings live in `%APPDATA%\screenpen\settings.toml`: colors, palette buttons and their order,
+every shortcut (an empty string turns one off), language (`auto`, `en`, `ru`). "Settings…" in the
+tray opens the file; changes apply the next time you start drawing.
 
 | Key | Action |
 |---|---|

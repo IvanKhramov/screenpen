@@ -64,6 +64,13 @@ impl Surface {
         }
     }
 
+    /// A surface holding a copy of `pixmap` (already in BGRA order).
+    pub fn from_pixmap(pixmap: &tiny_skia::Pixmap) -> Option<Surface> {
+        let mut surface = Surface::new(pixmap.width(), pixmap.height())?;
+        surface.pixmap().data_mut().copy_from_slice(pixmap.data());
+        Some(surface)
+    }
+
     /// A tiny-skia view of the DIB pixels. Colors must go through `bgra`.
     pub fn pixmap(&mut self) -> PixmapMut<'_> {
         let len = self.width as usize * self.height as usize * 4;
