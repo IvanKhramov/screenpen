@@ -18,8 +18,8 @@ use screenpen_core::{
     Rect, Rgba, StrokeBuilder, Style, ToolKind,
 };
 use tiny_skia::{
-    FillRule, IntRect, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint, Stroke, StrokeDash,
-    Transform,
+    FillRule, IntRect, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint,
+    Stroke, StrokeDash, Transform,
 };
 
 use crate::state::ToolState;
@@ -74,8 +74,27 @@ pub enum Request {
     Ghost,
     ToggleWhiteboard,
     Help,
+    ToggleSpotlight,
+    ToggleFreeze,
+    Snapshot,
     /// Tool, color or width changed: every screen and the palette should refresh.
     StateChanged,
+}
+
+/// How long the laser trail takes to fade after the button is released.
+const LASER_FADE: f64 = 0.8;
+const LASER: Rgba = Rgba::rgb(1.0, 0.18, 0.18);
+/// Spotlight radius in points, and its limits for the wheel.
+const SPOTLIGHT_RADIUS: f32 = 140.0;
+const SPOTLIGHT_LIMITS: (f32, f32) = (40.0, 600.0);
+
+#[derive(Default)]
+struct Laser {
+    trail: Vec<Point>,
+    /// Where the dot is (the pointer, while the laser tool is active).
+    at: Option<Point>,
+    /// When the button went up; the trail fades from then.
+    released: Option<f64>,
 }
 
 enum Gesture {
@@ -100,6 +119,8 @@ enum Gesture {
         start: Point,
         offset: (f32, f32),
     },
+    /// Drawing with the laser: points go to `Canvas::laser`.
+    Laser,
     Marquee {
         start: Point,
         initial: HashSet<AnnotationId>,
@@ -139,6 +160,11 @@ pub struct Canvas {
     painted_overlay: Option<Rect>,
     /// Annotations that fade out (id, fade start time).
     fade_after: Option<f32>,
+    laser: Laser,
+    /// A frozen screen image (same size and byte order as the cache) under the ink.
+    backdrop: Option<Pixmap>,
+    /// Center (None until the pointer is seen) and radius, while the spotlight is on.
+    spotlight: Option<(Option<Point>, f32)>,
 }
 
 impl Canvas {
@@ -159,6 +185,9 @@ impl Canvas {
             eraser_at: None,
             painted_overlay: None,
             fade_after: None,
+            laser: Laser::default(),
+            backdrop: None,
+            spotlight: None,
         })
     }
 
@@ -245,7 +274,26 @@ impl Canvas {
             .map(|a| self.fade_alpha(a, at))
             .collect();
         let mut cache = self.cache.as_mut();
-        cache.fill(skia_color(self.background, self.order));
+        match &self.backdrop {
+            // A frozen screen: the image, then the dim veil (or the whiteboard) over it.
+            Some(image) if self.background.alpha < 1.0 => {
+                cache.data_mut().copy_from_slice(image.data());
+                if self.background.alpha > 1.5 / 255.0 {
+                    let mut veil = Paint::default();
+                    veil.set_color(skia_color(self.background, self.order));
+                    let r = tiny_skia::Rect::from_xywh(
+                        0.0,
+                        0.0,
+                        cache.width() as f32,
+                        cache.height() as f32,
+                    );
+                    if let Some(r) = r {
+                        cache.fill_rect(r, &veil, Transform::identity(), None);
+                    }
+                }
+            }
+            _ => cache.fill(skia_color(self.background, self.order)),
+        }
         for (a, &alpha) in self.doc.annotations().iter().zip(&alphas) {
             if hidden.contains(&a.id) {
                 continue;
@@ -272,6 +320,24 @@ impl Canvas {
     /// Drops annotations whose fade finished and redraws the ones fading.
     /// Returns whether something is still fading (keep ticking).
     pub fn tick(&mut self) -> (Repaint, bool) {
+        // The laser trail fades out after release; overlays repaint themselves.
+        if let Some(released) = self.laser.released
+            && now() - released >= LASER_FADE
+        {
+            self.laser.trail.clear();
+            self.laser.released = None;
+        }
+        let laser = self.laser.released.is_some();
+        let (repaint, more) = self.tick_fade();
+        (repaint, more || laser)
+    }
+
+    /// Whether something animates and needs frequent ticks (not auto-fade's slow ones).
+    pub fn animating(&self) -> bool {
+        self.laser.released.is_some()
+    }
+
+    fn tick_fade(&mut self) -> (Repaint, bool) {
         let Some(after) = self.fade_after else {
             return (Repaint::None, false);
         };
@@ -332,7 +398,7 @@ impl Canvas {
                 None,
             );
         }
-        self.draw_overlays(target);
+        self.draw_overlays(target, rect);
         self.painted_overlay = overlay;
         Some(rect)
     }
@@ -367,6 +433,18 @@ impl Canvas {
             let b = bounds(&a).unwrap_or(Rect::new(a_origin(&a).x, a_origin(&a).y, 0.0, 0.0));
             add(b.union(self.caret(&a)));
         }
+        for p in self.laser.trail.iter().chain(&self.laser.at) {
+            add(Rect::new(p.x - 14.0, p.y - 14.0, 28.0, 28.0));
+        }
+        // The veil outside the circle doesn't change as it moves; only the circle does.
+        if let Some((Some(c), radius)) = self.spotlight {
+            add(Rect::new(
+                c.x - radius,
+                c.y - radius,
+                radius * 2.0,
+                radius * 2.0,
+            ));
+        }
         r.map(|r| self.to_pixels(r.inset(-4.0)))
     }
 
@@ -384,8 +462,10 @@ impl Canvas {
             .collect()
     }
 
-    fn draw_overlays(&self, target: &mut PixmapMut) {
+    fn draw_overlays(&self, target: &mut PixmapMut, region: IntRect) {
         let t = self.transform();
+        self.draw_spotlight(target, region);
+        self.draw_laser(target);
         match &self.gesture {
             Gesture::Shape {
                 preview: Some(a), ..
@@ -455,6 +535,119 @@ impl Canvas {
         }
     }
 
+    /// Holds `image` (or nothing) under the ink. It must match the canvas size.
+    pub fn set_backdrop(&mut self, image: Option<Pixmap>) -> Repaint {
+        self.backdrop = image.filter(|i| i.width() == self.width() && i.height() == self.height());
+        self.rebuild_cache();
+        Repaint::Full
+    }
+
+    pub fn backdrop(&self) -> Option<&Pixmap> {
+        self.backdrop.as_ref()
+    }
+
+    /// The screen as viewers see it: `screen` (or the frozen image) with the background
+    /// veil and every annotation on top. Same byte order as the canvas.
+    pub fn compose(&self, screen: Option<Pixmap>) -> Option<Pixmap> {
+        let mut image = match (self.backdrop.clone(), screen) {
+            (Some(frozen), _) => frozen,
+            (None, Some(screen)) => screen,
+            (None, None) => Pixmap::new(self.width(), self.height())?,
+        };
+        if self.background.alpha > 1.5 / 255.0 {
+            let mut veil = Paint::default();
+            veil.set_color(skia_color(self.background, self.order));
+            let r =
+                tiny_skia::Rect::from_xywh(0.0, 0.0, image.width() as f32, image.height() as f32)?;
+            image.fill_rect(r, &veil, Transform::identity(), None);
+        }
+        let t = self.transform();
+        for a in self.doc.annotations() {
+            draw(&mut image.as_mut(), a, t, self.order);
+        }
+        Some(image)
+    }
+
+    pub fn spotlight_on(&self) -> bool {
+        self.spotlight.is_some()
+    }
+
+    pub fn set_spotlight(&mut self, on: bool) -> Repaint {
+        if on == self.spotlight.is_some() {
+            return Repaint::None;
+        }
+        self.spotlight = on.then_some((None, SPOTLIGHT_RADIUS));
+        Repaint::Full
+    }
+
+    /// Wheel over the spotlight: bigger or smaller circle.
+    pub fn resize_spotlight(&mut self, grow: bool) {
+        if let Some((_, radius)) = &mut self.spotlight {
+            let factor = if grow { 1.15 } else { 1.0 / 1.15 };
+            *radius = (*radius * factor).clamp(SPOTLIGHT_LIMITS.0, SPOTLIGHT_LIMITS.1);
+        }
+    }
+
+    /// A dark veil over `region`, with a hole around the pointer.
+    fn draw_spotlight(&self, target: &mut PixmapMut, region: IntRect) {
+        let Some((center, radius)) = self.spotlight else {
+            return;
+        };
+        let mut pb = PathBuilder::new();
+        pb.push_rect(region.to_rect());
+        if let Some(c) = center {
+            let s = self.scale;
+            pb.push_circle(c.x * s, c.y * s, radius * s);
+        }
+        let Some(path) = pb.finish() else { return };
+        let mut veil = Paint {
+            anti_alias: true,
+            ..Paint::default()
+        };
+        veil.set_color(skia_color(Rgba::BLACK.with_alpha(0.65), self.order));
+        target.fill_path(&path, &veil, FillRule::EvenOdd, Transform::identity(), None);
+    }
+
+    /// A glowing red trail with a dot at the pointer.
+    fn draw_laser(&self, target: &mut PixmapMut) {
+        let alpha = match self.laser.released {
+            Some(released) => (1.0 - (now() - released) / LASER_FADE).clamp(0.0, 1.0) as f32,
+            None => 1.0,
+        };
+        let t = self.transform();
+        let mut paint = Paint {
+            anti_alias: true,
+            ..Paint::default()
+        };
+        if self.laser.trail.len() > 1 && alpha > 0.0 {
+            let mut pb = PathBuilder::new();
+            pb.move_to(self.laser.trail[0].x, self.laser.trail[0].y);
+            for p in &self.laser.trail[1..] {
+                pb.line_to(p.x, p.y);
+            }
+            if let Some(path) = pb.finish() {
+                for (width, a) in [(12.0, 0.25), (4.0, 1.0)] {
+                    paint.set_color(skia_color(LASER.with_alpha(a * alpha), self.order));
+                    let stroke = Stroke {
+                        width,
+                        line_cap: LineCap::Round,
+                        line_join: LineJoin::Round,
+                        ..Stroke::default()
+                    };
+                    target.stroke_path(&path, &paint, &stroke, t, None);
+                }
+            }
+        }
+        if let Some(p) = self.laser.at {
+            for (radius, a) in [(11.0, 0.3), (5.0, 1.0)] {
+                paint.set_color(skia_color(LASER.with_alpha(a), self.order));
+                if let Some(dot) = PathBuilder::from_circle(p.x, p.y, radius) {
+                    target.fill_path(&dot, &paint, FillRule::Winding, t, None);
+                }
+            }
+        }
+    }
+
     // MARK: pointer
 
     pub fn pointer_down(&mut self, state: &ToolState, p: Pointer, button: Button) -> Repaint {
@@ -492,12 +685,29 @@ impl Canvas {
             ToolKind::Eraser => self.begin_erase(state, at),
             ToolKind::Select => self.select_down(at, p.mods.shift, p.double_click),
             ToolKind::Text => self.text_down(state, at),
+            ToolKind::Laser => {
+                self.laser = Laser {
+                    trail: vec![at],
+                    at: Some(at),
+                    released: None,
+                };
+                self.gesture = Gesture::Laser;
+                Repaint::None
+            }
         }
     }
 
     pub fn pointer_move(&mut self, state: &ToolState, p: Pointer) -> Repaint {
         let at = self.to_points(&p);
+        if let Some((center, _)) = &mut self.spotlight {
+            *center = Some(at);
+        }
         match &mut self.gesture {
+            Gesture::Laser => {
+                self.laser.at = Some(at);
+                self.laser.trail.push(at);
+                Repaint::None
+            }
             Gesture::Idle => Repaint::None,
             Gesture::Freehand {
                 builder,
@@ -577,6 +787,11 @@ impl Canvas {
 
     /// Hover without a button: only the eraser ring follows the pointer.
     pub fn hover(&mut self, state: &ToolState, p: Pointer) -> Repaint {
+        let at = self.to_points(&p);
+        self.laser.at = (state.tool == ToolKind::Laser).then_some(at);
+        if let Some((center, _)) = &mut self.spotlight {
+            *center = Some(at);
+        }
         if state.tool == ToolKind::Eraser && matches!(self.gesture, Gesture::Idle) {
             self.eraser_at = Some((self.to_points(&p), state.eraser_radius()));
         } else {
@@ -591,6 +806,10 @@ impl Canvas {
         let gesture = std::mem::replace(&mut self.gesture, Gesture::Idle);
         match gesture {
             Gesture::Idle => Repaint::None,
+            Gesture::Laser => {
+                self.laser.released = Some(now());
+                Repaint::None
+            }
             Gesture::Freehand {
                 mut builder,
                 style,
@@ -896,6 +1115,7 @@ impl Canvas {
         let had_gesture = !matches!(self.gesture, Gesture::Idle);
         self.gesture = Gesture::Idle;
         self.eraser_at = None;
+        self.laser = Laser::default();
         let live = self.live_bounds.map_or(Repaint::None, Repaint::Rect);
         self.clear_live();
         if had_gesture {
@@ -988,6 +1208,9 @@ impl Canvas {
             Action::Ghost => (self.cancel(), Some(Request::Ghost)),
             Action::Whiteboard => (Repaint::None, Some(Request::ToggleWhiteboard)),
             Action::Help => (Repaint::None, Some(Request::Help)),
+            Action::Spotlight => (Repaint::None, Some(Request::ToggleSpotlight)),
+            Action::Freeze => (Repaint::None, Some(Request::ToggleFreeze)),
+            Action::Snapshot => (Repaint::None, Some(Request::Snapshot)),
             Action::ToggleDrawing | Action::ExitGhost | Action::Quit => (Repaint::None, None),
         }
     }
@@ -1300,5 +1523,74 @@ mod tests {
         let target = drag(&mut c, &state, &points);
         let px = target.pixel(100, 50).unwrap();
         assert!(px.alpha() > 80 && px.alpha() < 130, "alpha {}", px.alpha());
+    }
+
+    #[test]
+    fn laser_leaves_nothing_behind() {
+        let mut c = canvas();
+        let state = ToolState {
+            tool: ToolKind::Laser,
+            ..ToolState::default()
+        };
+        let target = drag(
+            &mut c,
+            &state,
+            &line((20., 50.), (300., 50.), Mods::default()),
+        );
+        assert!(c.doc.annotations().is_empty());
+        assert!(c.animating(), "the trail fades after release");
+        assert!(
+            opaque(&target, 150, 50),
+            "the trail is visible right after release"
+        );
+        c.laser.released = Some(now() - LASER_FADE - 0.1);
+        c.tick();
+        assert!(!c.animating());
+        assert!(c.laser.trail.is_empty());
+    }
+
+    #[test]
+    fn spotlight_dims_all_but_a_circle() {
+        let mut c = canvas();
+        let state = ToolState::default();
+        let mut target = Pixmap::new(c.width(), c.height()).unwrap();
+        let r = c.set_spotlight(true);
+        for _ in 0..10 {
+            c.resize_spotlight(false); // down to the smallest circle, 40 pt
+        }
+        c.hover(&state, at(200., 150.));
+        c.paint(&mut target.as_mut(), r);
+        assert!(
+            target.pixel(200, 150).unwrap().alpha() < 10,
+            "clear around the pointer"
+        );
+        assert!(target.pixel(5, 5).unwrap().alpha() > 150, "dark elsewhere");
+        c.resize_spotlight(true);
+        let r = c.set_spotlight(false);
+        c.paint(&mut target.as_mut(), r);
+        assert!(target.pixel(5, 5).unwrap().alpha() < 10);
+    }
+
+    #[test]
+    fn compose_puts_ink_over_the_screen() {
+        let mut c = canvas();
+        let state = ToolState::default();
+        drag(
+            &mut c,
+            &state,
+            &line((20., 50.), (300., 50.), Mods::default()),
+        );
+        let mut screen = Pixmap::new(c.width(), c.height()).unwrap();
+        screen.fill(tiny_skia::Color::from_rgba8(0, 0, 255, 255));
+        let image = c.compose(Some(screen.clone())).unwrap();
+        let ink = image.pixel(150, 50).unwrap();
+        assert!(ink.red() > 200 && ink.blue() < 100, "red ink over blue");
+        assert!(
+            image.pixel(150, 250).unwrap().blue() > 200,
+            "the screen elsewhere"
+        );
+        // Frozen: the backdrop wins over a fresh capture.
+        c.set_backdrop(Some(screen));
+        assert!(c.compose(None).unwrap().pixel(150, 250).unwrap().blue() > 200);
     }
 }

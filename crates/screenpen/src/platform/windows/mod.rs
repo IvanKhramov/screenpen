@@ -3,6 +3,8 @@
 //! forwarding to the previous foreground window, the palette and the tray icon.
 //! Diagnostics go to %TEMP%\screenpen.log.
 
+mod autostart;
+mod capture;
 mod instance;
 mod keys;
 mod surface;
@@ -38,12 +40,15 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     MapVirtualKeyW, RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, VK_DOWN, VK_LEFT,
     VK_NEXT, VK_PRIOR, VK_RIGHT, VK_UP,
 };
-use windows_sys::Win32::UI::Input::Pointer::EnableMouseInPointer;
+use windows_sys::Win32::UI::Input::Pointer::{
+    EnableMouseInPointer, GetPointerPenInfo, GetPointerType, POINTER_PEN_INFO,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
     GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GetClassNameW, GetCursorPos, GetForegroundWindow,
     GetMessageW, GetWindowLongPtrW, GetWindowRect, HWND_TOPMOST, IDC_ARROW, IDC_CROSS, IDC_IBEAM,
-    KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, PostMessageW, PostQuitMessage, RegisterClassExW,
+    KillTimer, LoadCursorW, MA_NOACTIVATE, MSG, PEN_FLAG_ERASER, PEN_FLAG_INVERTED,
+    PEN_MASK_PRESSURE, PT_PEN, PostMessageW, PostQuitMessage, RegisterClassExW,
     RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetCursor,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
     TranslateMessage, WM_CHAR, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
@@ -91,6 +96,8 @@ struct App {
     lang: Lang,
     active: bool,
     ghost: bool,
+    /// The screens show a captured image under the ink.
+    frozen: bool,
     /// Overlay index and button of the gesture in progress.
     pressed: Option<(usize, Button)>,
     last_click: Option<(Instant, POINT)>,
@@ -140,6 +147,7 @@ pub fn run() {
         lang: system_lang(),
         active: false,
         ghost: false,
+        frozen: false,
         pressed: None,
         last_click: None,
         previous: null_mut(),
@@ -157,6 +165,7 @@ pub fn run() {
             // Write the defaults so there's a file to look at and edit.
             save_settings(app);
         }
+        autostart::refresh();
         let taken = register_hotkeys(app);
         let key = chord_text(app, Action::ToggleDrawing);
         let l = app.lang;
@@ -596,6 +605,12 @@ fn show(app: &mut App) {
 fn hide(app: &mut App) {
     app.active = false;
     app.pressed = None;
+    if app.frozen {
+        toggle_freeze(app);
+    }
+    for o in &mut app.overlays {
+        o.canvas.set_spotlight(false);
+    }
     for o in &mut app.overlays {
         o.canvas.cancel();
         unsafe { ShowWindow(o.hwnd, SW_HIDE) };
@@ -673,15 +688,98 @@ fn focus_overlay_under_cursor(app: &App) {
     }
 }
 
+/// One timer drives auto-fade (slow) and the laser fade-out (smooth).
 fn update_fade_timer(app: &App) {
     let Some(first) = app.overlays.first() else {
         return;
     };
+    let animating = app.overlays.iter().any(|o| o.canvas.animating());
     unsafe {
-        if app.active && app.state.auto_fade.is_some() {
+        if app.active && animating {
+            SetTimer(first.hwnd, FADE_TIMER, 16, None);
+        } else if app.active && app.state.auto_fade.is_some() {
             SetTimer(first.hwnd, FADE_TIMER, 50, None);
         } else {
             KillTimer(first.hwnd, FADE_TIMER);
+        }
+    }
+}
+
+/// Our windows that must not end up in a capture of the screen behind them.
+fn own_windows(app: &App) -> Vec<HWND> {
+    let mut windows: Vec<HWND> = app.overlays.iter().map(|o| o.hwnd).collect();
+    windows.extend([app.palette.hwnd, app.palette.tooltip.hwnd]);
+    windows
+}
+
+/// Puts capture visibility back after a capture: overlays visible, palette per setting.
+fn restore_capture_visibility(app: &mut App) {
+    for o in &app.overlays {
+        ui::set_capture_hidden(o.hwnd, false);
+    }
+    let hide = app.hide_palette_from_capture;
+    set_capture_hiding(app, hide);
+}
+
+fn toggle_freeze(app: &mut App) {
+    app.frozen = !app.frozen;
+    let images: Vec<Option<tiny_skia::Pixmap>> = if app.frozen {
+        let exclude = own_windows(app);
+        let images = app
+            .overlays
+            .iter()
+            .map(|o| capture::screen(o.monitor, &exclude))
+            .collect();
+        restore_capture_visibility(app);
+        images
+    } else {
+        app.overlays.iter().map(|_| None).collect()
+    };
+    for (o, image) in app.overlays.iter_mut().zip(images) {
+        let r = o.canvas.set_backdrop(image);
+        paint(o, r);
+    }
+    log(&format!("freeze: {}", app.frozen));
+    render_palette(app);
+}
+
+/// Saves the screen under the pointer with its ink to Pictures and the clipboard.
+fn snapshot(app: &mut App, index: usize) {
+    let Some(o) = app.overlays.get(index) else {
+        return;
+    };
+    let screen = if o.canvas.backdrop().is_some() {
+        None
+    } else {
+        let exclude = own_windows(app);
+        let image = capture::screen(o.monitor, &exclude);
+        restore_capture_visibility(app);
+        image
+    };
+    let o = &app.overlays[index];
+    let result = o
+        .canvas
+        .compose(screen)
+        .ok_or_else(|| "out of memory".to_string())
+        .and_then(|image| {
+            let copied = capture::copy_to_clipboard(&image, o.hwnd);
+            capture::save_png(&image)
+                .map(|path| (path, copied))
+                .map_err(|e| e.to_string())
+        });
+    let l = app.lang;
+    match result {
+        Ok((path, copied)) => {
+            log(&format!(
+                "snapshot saved to {} (clipboard: {copied})",
+                path.display()
+            ));
+            app.tray
+                .notify(l.t(T::SnapshotSaved), &path.display().to_string());
+        }
+        Err(e) => {
+            log(&format!("snapshot failed: {e}"));
+            app.tray.notify(l.t(T::SnapshotFailed), &e);
         }
     }
 }
@@ -723,6 +821,11 @@ fn contains(r: RECT, p: POINT) -> bool {
 fn look(app: &App) -> Look {
     Look {
         tool: app.state.tool,
+        spotlight: app
+            .overlays
+            .first()
+            .is_some_and(|o| o.canvas.spotlight_on()),
+        frozen: app.frozen,
         color_index: app.state.color_index,
         colors: app.state.colors,
         ghost: app.ghost,
@@ -960,6 +1063,16 @@ fn run_action(app: &mut App, index: usize, action: Action) {
             refresh_all(app);
         }
         Some(Request::Help) => toggle_sheet(app, index),
+        Some(Request::ToggleSpotlight) => {
+            let on = !app.overlays.iter().any(|o| o.canvas.spotlight_on());
+            for o in &mut app.overlays {
+                let r = o.canvas.set_spotlight(on);
+                paint(o, r);
+            }
+            render_palette(app);
+        }
+        Some(Request::ToggleFreeze) => toggle_freeze(app),
+        Some(Request::Snapshot) => snapshot(app, index),
         Some(Request::StateChanged) => {
             // Tool, color or width changed: other screens drop their gestures.
             for (i, o) in app.overlays.iter_mut().enumerate() {
@@ -1043,6 +1156,9 @@ fn on_tray_command(app: &mut App, command: Command) {
             }
         }
         Command::Settings => open_settings(app),
+        Command::ToggleAutostart => {
+            autostart::set(!autostart::enabled());
+        }
         Command::Quit => unsafe { PostQuitMessage(0) },
     }
     // Every tray command changes something worth keeping, except toggling drawing.
@@ -1056,6 +1172,7 @@ fn on_tray_command(app: &mut App, command: Command) {
 
 fn menu_state(app: &App) -> MenuState {
     MenuState {
+        autostart: autostart::enabled(),
         lang: app.lang,
         version: instance::title(),
         mode: mode(app),
@@ -1151,7 +1268,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if app.palette.palette.hover.is_some() || app.palette.grip_hover {
                         clear_palette_hover(app);
                     }
-                    on_pointer(app, index, msg, p, flags);
+                    let pen = pen_info((wparam & 0xffff) as u32);
+                    on_pointer(app, index, msg, p, flags, pen);
                 }
             });
         }
@@ -1166,7 +1284,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             };
             handled = Some(0);
             let (ctrl, _, _) = keys::modifiers();
-            if ctrl {
+            let delta = ((wparam >> 16) & 0xffff) as i16;
+            if !ctrl && app.overlays[index].canvas.spotlight_on() {
+                let o = &mut app.overlays[index];
+                o.canvas.resize_spotlight(delta > 0);
+                paint(o, Repaint::Full);
+            } else if ctrl {
                 let delta = ((wparam >> 16) & 0xffff) as i16;
                 let action = if delta > 0 {
                     Action::Thicker
@@ -1210,11 +1333,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_TIMER if wparam == FADE_TIMER => with_app(|app| {
             handled = Some(0);
             for o in &mut app.overlays {
+                let animating = o.canvas.animating();
                 let (repaint, _) = o.canvas.tick();
-                if repaint != Repaint::None {
+                // Overlays (the laser) repaint themselves in `paint`.
+                if repaint != Repaint::None || animating {
                     paint(o, repaint);
                 }
             }
+            update_fade_timer(app);
         }),
         WM_MOUSEACTIVATE => with_app(|app| {
             if hwnd == app.palette.hwnd || hwnd == app.sheet.hwnd {
@@ -1234,7 +1360,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     handled.unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
 }
 
-fn on_pointer(app: &mut App, index: usize, msg: u32, screen: POINT, flags: usize) {
+/// Pressure (0..=1) and whether the eraser end touches, for a pen; None for mouse and touch.
+fn pen_info(pointer_id: u32) -> Option<(f32, bool)> {
+    unsafe {
+        let mut kind = 0;
+        if GetPointerType(pointer_id, &mut kind) == 0 || kind != PT_PEN {
+            return None;
+        }
+        let mut info: POINTER_PEN_INFO = std::mem::zeroed();
+        if GetPointerPenInfo(pointer_id, &mut info) == 0 {
+            return None;
+        }
+        // Pens without pressure report 0; draw those at full width.
+        let pressure = if info.penMask & PEN_MASK_PRESSURE != 0 {
+            info.pressure as f32 / 1024.0
+        } else {
+            1.0
+        };
+        let eraser = info.penFlags & (PEN_FLAG_ERASER | PEN_FLAG_INVERTED) != 0;
+        Some((pressure, eraser))
+    }
+}
+
+fn on_pointer(
+    app: &mut App,
+    index: usize,
+    msg: u32,
+    screen: POINT,
+    flags: usize,
+    pen: Option<(f32, bool)>,
+) {
     if app.ghost {
         return;
     }
@@ -1243,13 +1398,16 @@ fn on_pointer(app: &mut App, index: usize, msg: u32, screen: POINT, flags: usize
     let mut pointer = Pointer {
         x: (screen.x - o.monitor.left) as f32,
         y: (screen.y - o.monitor.top) as f32,
-        pressure: 1.0,
+        pressure: pen.map_or(1.0, |(p, _)| p),
         mods: Mods { ctrl, alt, shift },
         double_click: false,
     };
     let repaint = match msg {
         WM_POINTERDOWN if app.pressed.is_none() => {
-            let button = if flags & POINTER_FLAG_SECONDBUTTON != 0 {
+            // The pen's eraser end erases like the right mouse button.
+            let button = if flags & POINTER_FLAG_SECONDBUTTON != 0
+                || pen.is_some_and(|(_, eraser)| eraser)
+            {
                 Button::Right
             } else if flags & POINTER_FLAG_FIRSTBUTTON != 0 {
                 Button::Left
@@ -1288,6 +1446,9 @@ fn on_pointer(app: &mut App, index: usize, msg: u32, screen: POINT, flags: usize
         _ => return,
     };
     paint(&mut app.overlays[index], repaint);
+    if msg == WM_POINTERUP {
+        update_fade_timer(app);
+    }
 }
 
 fn is_double_click(app: &mut App, p: POINT) -> bool {

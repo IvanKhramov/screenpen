@@ -31,6 +31,9 @@ impl Item {
                 Action::Clear,
                 Action::Ghost,
                 Action::Whiteboard,
+                Action::Spotlight,
+                Action::Freeze,
+                Action::Snapshot,
                 Action::Help,
             ]
             .map(Item::Action),
@@ -75,7 +78,9 @@ impl Item {
             Item::Action(
                 Action::SelectAll | Action::BringToFront | Action::DeleteSelection | Action::Escape,
             ) => 4,
-            Item::Action(Action::Ghost | Action::Whiteboard) => 5,
+            Item::Action(
+                Action::Ghost | Action::Whiteboard | Action::Spotlight | Action::Freeze,
+            ) => 5,
             _ => 6,
         }
     }
@@ -114,6 +119,8 @@ pub fn chord_label(c: screenpen_core::Chord) -> String {
 /// What the palette highlights.
 pub struct Look {
     pub tool: ToolKind,
+    pub spotlight: bool,
+    pub frozen: bool,
     pub color_index: usize,
     pub colors: [Rgba; 9],
     pub ghost: bool,
@@ -234,6 +241,8 @@ impl Palette {
                 Item::Action(Action::Tool(tool)) => *tool == look.tool,
                 Item::Action(Action::Ghost) => look.ghost,
                 Item::Action(Action::Whiteboard) => look.whiteboard,
+                Item::Action(Action::Spotlight) => look.spotlight,
+                Item::Action(Action::Freeze) => look.frozen,
                 _ => false,
             };
             if active {
@@ -611,6 +620,87 @@ fn draw_icon(
             line(pixmap, &[(13.0, 14.0), (15.0, 18.0)], 1.6);
         }
         Action::Help => fill(pixmap, glyph(cell, "?", 17.0), ink, t, o),
+        Action::Tool(ToolKind::Laser) => {
+            let c = cell.center();
+            let red = Rgba::rgb(1.0, 0.25, 0.25);
+            fill(
+                pixmap,
+                PathBuilder::from_circle(c.x + 3.0, c.y - 3.0, 6.5),
+                red.with_alpha(0.3),
+                t,
+                o,
+            );
+            fill(
+                pixmap,
+                PathBuilder::from_circle(c.x + 3.0, c.y - 3.0, 3.0),
+                red,
+                t,
+                o,
+            );
+            stroke(
+                pixmap,
+                polyline(cell, &[(3.0, 17.0), (10.5, 9.5)], false),
+                ink,
+                2.4,
+                t,
+                o,
+            );
+        }
+        Action::Spotlight => {
+            let c = cell.center();
+            fill(
+                pixmap,
+                rounded(cell.inset(5.0), 4.0),
+                ink.with_alpha(0.35),
+                t,
+                o,
+            );
+            fill(pixmap, PathBuilder::from_circle(c.x, c.y, 5.0), ink, t, o);
+        }
+        Action::Freeze => {
+            // A snowflake: three crossing lines with small ticks.
+            let c = cell.center();
+            for k in 0..3 {
+                let a = k as f32 * std::f32::consts::PI / 3.0 + std::f32::consts::FRAC_PI_2;
+                let (s, co) = a.sin_cos();
+                let mut pb = PathBuilder::new();
+                pb.move_to(c.x - co * 8.0, c.y - s * 8.0);
+                pb.line_to(c.x + co * 8.0, c.y + s * 8.0);
+                stroke(pixmap, pb.finish(), ink, 1.8, t, o);
+            }
+            fill(pixmap, PathBuilder::from_circle(c.x, c.y, 2.0), ink, t, o);
+        }
+        Action::Snapshot => {
+            // A camera.
+            stroke(
+                pixmap,
+                rounded(Rect::new(cell.x + 7.0, cell.y + 11.0, 18.0, 13.0), 2.5),
+                ink,
+                1.8,
+                t,
+                o,
+            );
+            fill(
+                pixmap,
+                polyline(
+                    cell,
+                    &[(7.0, 4.5), (13.0, 4.5), (14.5, 7.0), (5.5, 7.0)],
+                    true,
+                ),
+                ink,
+                t,
+                o,
+            );
+            let c = Point::new(cell.x + 16.0, cell.y + 17.5);
+            stroke(
+                pixmap,
+                PathBuilder::from_circle(c.x, c.y, 3.5),
+                ink,
+                1.8,
+                t,
+                o,
+            );
+        }
         Action::SelectAll => {
             let dashed = Stroke {
                 width: 1.6,
@@ -780,6 +870,8 @@ mod tests {
     fn look() -> Look {
         Look {
             tool: ToolKind::Pen,
+            spotlight: false,
+            frozen: false,
             color_index: 0,
             colors: Rgba::PALETTE,
             ghost: false,

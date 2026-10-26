@@ -16,10 +16,12 @@ pub enum ToolKind {
     Badge,
     Eraser,
     Select,
+    /// A fading trail that is never committed.
+    Laser,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 10] = [
+    pub const ALL: [ToolKind; 11] = [
         ToolKind::Pen,
         ToolKind::Highlighter,
         ToolKind::Line,
@@ -30,6 +32,7 @@ impl ToolKind {
         ToolKind::Badge,
         ToolKind::Eraser,
         ToolKind::Select,
+        ToolKind::Laser,
     ];
 
     /// Stable identifier for settings files and translations.
@@ -45,6 +48,7 @@ impl ToolKind {
             ToolKind::Badge => "badge",
             ToolKind::Eraser => "eraser",
             ToolKind::Select => "select",
+            ToolKind::Laser => "laser",
         }
     }
 

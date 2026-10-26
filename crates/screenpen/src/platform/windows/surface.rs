@@ -71,6 +71,11 @@ impl Surface {
         Some(surface)
     }
 
+    /// The memory DC holding the DIB, for GDI to draw into (screen capture).
+    pub fn dc(&self) -> HDC {
+        self.dc
+    }
+
     /// A tiny-skia view of the DIB pixels. Colors must go through `bgra`.
     pub fn pixmap(&mut self) -> PixmapMut<'_> {
         let len = self.width as usize * self.height as usize * 4;

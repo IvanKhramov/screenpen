@@ -14,7 +14,7 @@ cargo run --release -p screenpen
 ```
 
 screenpen lives in the tray: the icon is yellow when idle, red while drawing and purple in ghost mode.
-Left click toggles drawing, right click opens the menu (whiteboard, dimming, fading, settings, quit).
+Left click toggles drawing, right click opens the menu (whiteboard, dimming, fading, start with Windows, settings, quit).
 
 The palette shows a tooltip with the name and key of every button. Drag it by the dotted grip
 (it snaps to screen edges); double-click the grip to turn it vertical. Press `?` for all shortcuts.
@@ -29,13 +29,14 @@ They are stored in `%APPDATA%\screenpen\settings.toml`.
 | Ctrl+Alt+Shift+A | Start / stop drawing |
 | P · H · L · A | Pen · Highlighter · Line · Arrow |
 | R · O · T · N | Rectangle · Ellipse · Text · Numbered badge |
-| E · V | Eraser · Select |
+| E · V · K | Eraser · Select · Laser pointer |
 | 1-9 | Color (recolors the selection when one exists) |
 | `[` · `]` · Ctrl+wheel | Thinner · Thicker |
 | C | Clear |
 | Ctrl+Z · Ctrl+Shift+Z | Undo · Redo |
 | Ctrl+A · Ctrl+] · Delete | Select all · Bring to front · Delete the selection |
-| W | Whiteboard |
+| W · S · F | Whiteboard · Spotlight (wheel resizes it) · Freeze the screen |
+| Ctrl+S | Screenshot with the drawing: saved to Pictures\screenpen and copied |
 | G · Ctrl+Alt+Shift+G | Ghost mode on (clicks go through) · off |
 | PgUp · PgDn · arrows | Sent to the window behind (flip slides) |
 | Esc | Finish typing, deselect, or stop drawing |
@@ -43,7 +44,7 @@ They are stored in `%APPDATA%\screenpen\settings.toml`.
 
 With the pen: hold Ctrl for a rectangle, Ctrl+Alt for an ellipse, Alt for an arrow.
 Shift makes lines snap to 45° and shapes square. Alt with the arrow tool bends the arrow.
-Hold the right mouse button to erase with any tool. Double-click text with the select tool to edit it.
+Hold the right mouse button (or use the pen's eraser end) to erase with any tool. Pen pressure changes the width. Double-click text with the select tool to edit it.
 Keys are physical: P is the pen on any keyboard layout.
 
 The log goes to `%TEMP%\screenpen.log`.

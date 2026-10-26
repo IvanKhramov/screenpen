@@ -24,6 +24,9 @@ pub enum T {
     /// "After {n} s"
     FadeAfter,
     HidePalette,
+    Autostart,
+    SnapshotSaved,
+    SnapshotFailed,
     Settings,
     Quit,
     Running,
@@ -72,6 +75,12 @@ impl Lang {
             (Ru, FadeAfter) => "Через {n} с",
             (En, HidePalette) => "Hide palette from screen sharing",
             (Ru, HidePalette) => "Прятать палитру из демонстрации экрана",
+            (En, SnapshotSaved) => "Screenshot saved and copied",
+            (Ru, SnapshotSaved) => "Снимок сохранён и скопирован",
+            (En, SnapshotFailed) => "Screenshot failed",
+            (Ru, SnapshotFailed) => "Снимок не получился",
+            (En, Autostart) => "Start with Windows",
+            (Ru, Autostart) => "Запускать вместе с Windows",
             (En, Settings) => "Settings…",
             (Ru, Settings) => "Настройки…",
             (En, Quit) => "Quit",
@@ -137,6 +146,8 @@ impl Lang {
             (Ru, Eraser) => "Ластик",
             (En, Select) => "Select",
             (Ru, Select) => "Выделение",
+            (En, Laser) => "Laser pointer",
+            (Ru, Laser) => "Лазерная указка",
         }
     }
 
@@ -185,6 +196,9 @@ impl Lang {
             Action::Escape => fixed("Deselect / stop drawing", "Снять выделение / закончить"),
             Action::Ghost => fixed("Ghost mode", "Режим призрака"),
             Action::Whiteboard => fixed("Whiteboard", "Белая доска"),
+            Action::Spotlight => fixed("Spotlight", "Прожектор"),
+            Action::Freeze => fixed("Freeze the screen", "Заморозить экран"),
+            Action::Snapshot => fixed("Screenshot with drawing", "Снимок экрана с рисунком"),
             Action::Help => fixed("Shortcuts", "Горячие клавиши"),
             Action::ToggleDrawing => {
                 fixed("Start / stop drawing", "Включить / выключить рисование")

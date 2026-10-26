@@ -50,12 +50,14 @@ pub enum Command {
     SetDim(usize),
     /// Index into `FADE_SECONDS`, or off.
     SetFade(Option<usize>),
+    ToggleAutostart,
     Settings,
     Quit,
 }
 
 /// What the menu shows checked.
 pub struct MenuState {
+    pub autostart: bool,
     pub lang: Lang,
     pub version: String,
     pub mode: Mode,
@@ -174,6 +176,7 @@ impl Tray {
                 l.t(T::HidePalette),
             );
             AppendMenuW(menu, MF_SEPARATOR, 0, null());
+            add(menu, MF_STRING | check(m.autostart), 7, l.t(T::Autostart));
             add(menu, MF_STRING, 6, l.t(T::Settings));
             add(
                 menu,
@@ -204,6 +207,7 @@ impl Tray {
                 4 => Some(Command::ToggleCaptureHiding),
                 5 => Some(Command::Quit),
                 6 => Some(Command::Settings),
+                7 => Some(Command::ToggleAutostart),
                 n @ 100..=199 => Some(Command::SetDim(n - 100)),
                 200 => Some(Command::SetFade(None)),
                 n @ 201..=299 => Some(Command::SetFade(Some(n - 201))),

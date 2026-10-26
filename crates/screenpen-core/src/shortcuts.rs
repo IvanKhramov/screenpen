@@ -205,6 +205,12 @@ pub enum Action {
     Escape,
     Ghost,
     Whiteboard,
+    /// Dim everything except a circle around the pointer.
+    Spotlight,
+    /// Hold the current screen image under the ink.
+    Freeze,
+    /// Save the screen with the ink to a PNG and copy it to the clipboard.
+    Snapshot,
     Help,
     /// Global: start or stop drawing.
     ToggleDrawing,
@@ -240,6 +246,9 @@ impl Action {
                     Action::Escape => "escape",
                     Action::Ghost => "ghost",
                     Action::Whiteboard => "whiteboard",
+                    Action::Spotlight => "spotlight",
+                    Action::Freeze => "freeze",
+                    Action::Snapshot => "snapshot",
                     Action::Help => "help",
                     Action::ToggleDrawing => "toggle_drawing",
                     Action::ExitGhost => "exit_ghost",
@@ -294,6 +303,7 @@ impl Default for Shortcuts {
             (Action::Tool(ToolKind::Badge), key('N')),
             (Action::Tool(ToolKind::Eraser), key('E')),
             (Action::Tool(ToolKind::Select), key('V')),
+            (Action::Tool(ToolKind::Laser), key('K')),
         ];
         for i in 0..9u8 {
             b.push((Action::Color(i), key((b'1' + i) as char)));
@@ -310,6 +320,9 @@ impl Default for Shortcuts {
             (Action::Escape, Some(Chord::key(Key::Escape))),
             (Action::Ghost, key('G')),
             (Action::Whiteboard, key('W')),
+            (Action::Spotlight, key('S')),
+            (Action::Freeze, key('F')),
+            (Action::Snapshot, Some(Chord::ctrl(Char('S')))),
             (
                 Action::Help,
                 Some(Chord {
