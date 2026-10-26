@@ -84,6 +84,8 @@ pub enum Request {
 /// How long the laser trail takes to fade after the button is released.
 const LASER_FADE: f64 = 0.8;
 const LASER: Rgba = Rgba::rgb(1.0, 0.18, 0.18);
+/// The trail keeps only this many latest points.
+const LASER_POINTS: usize = 600;
 /// Spotlight radius in points, and its limits for the wheel.
 const SPOTLIGHT_RADIUS: f32 = 140.0;
 const SPOTLIGHT_LIMITS: (f32, f32) = (40.0, 600.0);
@@ -344,7 +346,14 @@ impl Canvas {
         let at = now();
         let mut expired = HashSet::new();
         let mut fading = false;
-        for a in self.doc.annotations() {
+        // Text being edited or a selection being moved must not vanish mid-gesture.
+        let busy = self.hidden();
+        for a in self
+            .doc
+            .annotations()
+            .iter()
+            .filter(|a| !busy.contains(&a.id))
+        {
             let age = at - a.created_at;
             if age >= after as f64 + FADE_DURATION {
                 expired.insert(a.id);
@@ -706,6 +715,12 @@ impl Canvas {
             Gesture::Laser => {
                 self.laser.at = Some(at);
                 self.laser.trail.push(at);
+                // Holding the button for long would make every move redraw an ever longer path.
+                if self.laser.trail.len() > LASER_POINTS {
+                    self.laser
+                        .trail
+                        .drain(..self.laser.trail.len() - LASER_POINTS);
+                }
                 Repaint::None
             }
             Gesture::Idle => Repaint::None,

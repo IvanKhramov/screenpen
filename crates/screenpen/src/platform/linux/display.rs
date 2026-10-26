@@ -61,6 +61,8 @@ pub enum PointerKind {
     Move,
     Up(u8),
     Leave,
+    /// The pointer was taken away mid-gesture (another client grabbed it).
+    Lost,
     /// Wheel step; true is up (away from the user).
     Wheel(bool),
 }

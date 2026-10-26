@@ -157,6 +157,8 @@ struct State {
     /// Serial of the last pointer enter, for setting the cursor.
     enter_serial: Option<u32>,
     pointer_at: Option<(i32, i32)>,
+    /// Buttons held on our surfaces.
+    buttons: u32,
     cursor: Cursor,
     click_through: bool,
     keyboard_overlay: Option<usize>,
@@ -203,6 +205,7 @@ impl Wayland {
             key_focus: None,
             enter_serial: None,
             pointer_at: None,
+            buttons: 0,
             cursor: Cursor::Cross,
             click_through: false,
             keyboard_overlay: None,
@@ -777,14 +780,24 @@ impl PointerHandler for State {
                     self.apply_cursor();
                     PointerKind::Move
                 }
+                // Leaving with a button down means the compositor took the pointer.
+                PointerEventKind::Leave { .. } if std::mem::take(&mut self.buttons) > 0 => {
+                    PointerKind::Lost
+                }
                 PointerEventKind::Leave { .. } => PointerKind::Leave,
                 PointerEventKind::Motion { .. } => PointerKind::Move,
                 PointerEventKind::Press { button, .. } => match button_number(button) {
-                    Some(b) => PointerKind::Down(b),
+                    Some(b) => {
+                        self.buttons += 1;
+                        PointerKind::Down(b)
+                    }
                     None => continue,
                 },
                 PointerEventKind::Release { button, .. } => match button_number(button) {
-                    Some(b) => PointerKind::Up(b),
+                    Some(b) => {
+                        self.buttons = self.buttons.saturating_sub(1);
+                        PointerKind::Up(b)
+                    }
                     None => continue,
                 },
                 PointerEventKind::Axis { vertical, .. } if vertical.absolute != 0.0 => {

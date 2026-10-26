@@ -51,11 +51,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PEN_MASK_PRESSURE, PT_PEN, PostMessageW, PostQuitMessage, RegisterClassExW,
     RegisterWindowMessageW, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetCursor,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    TranslateMessage, WM_CHAR, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_POINTERACTIVATE, WM_POINTERDOWN,
-    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_POINTERWHEEL, WM_RBUTTONUP, WM_SETCURSOR,
-    WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    TranslateMessage, WM_CAPTURECHANGED, WM_CHAR, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_POINTERACTIVATE,
+    WM_POINTERDOWN, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_POINTERWHEEL, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_SYSCHAR, WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_EX_LAYERED,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request};
@@ -67,6 +67,8 @@ use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState};
 const PA_NOACTIVATE: LRESULT = 3; // WM_POINTERACTIVATE result
 const POINTER_FLAG_FIRSTBUTTON: usize = 0x0010; // HIWORD(wParam) of WM_POINTER*
 const POINTER_FLAG_SECONDBUTTON: usize = 0x0020;
+const POINTER_FLAG_CANCELED: usize = 0x8000;
+const WM_POINTERCAPTURECHANGED: u32 = 0x024C;
 const FADE_TIMER: usize = 1;
 const GLOBAL_ACTIONS: [(i32, Action); 3] = [
     (1, Action::ToggleDrawing),
@@ -98,11 +100,13 @@ struct App {
     ghost: bool,
     /// The screens show a captured image under the ink.
     frozen: bool,
-    /// Overlay index and button of the gesture in progress.
-    pressed: Option<(usize, Button)>,
+    /// Overlay index, button and pointer id of the gesture in progress.
+    pressed: Option<(usize, Button, u32)>,
     last_click: Option<(Instant, POINT)>,
     previous: HWND,
     hide_palette_from_capture: bool,
+    /// The settings file failed to parse: don't overwrite it.
+    settings_broken: bool,
     rebuild: bool,
     tray: Tray,
     tray_hwnd: HWND,
@@ -152,6 +156,7 @@ pub fn run() {
         last_click: None,
         previous: null_mut(),
         hide_palette_from_capture: false,
+        settings_broken: false,
         rebuild: false,
         tray: Tray::new(tray_hwnd),
         tray_hwnd,
@@ -272,8 +277,17 @@ pub fn system_lang() -> Lang {
 fn load_settings(app: &mut App) {
     let (settings, error) = Settings::load(&app.settings_path);
     if let Some(e) = error {
-        log(&format!("settings not loaded, using defaults: {e}"));
+        // Keep what we have and stop saving until the file is fixed, or the next
+        // save would replace the user's file with defaults.
+        log(&format!("settings not loaded, keeping current ones: {e}"));
+        if !app.settings_broken {
+            let l = app.lang;
+            app.tray.notify(l.t(T::SettingsBroken), &e);
+        }
+        app.settings_broken = true;
+        return;
     }
+    app.settings_broken = false;
     let before = app.state.shortcuts.clone();
     let mut state = ToolState {
         whiteboard: app.state.whiteboard,
@@ -308,6 +322,10 @@ fn load_settings(app: &mut App) {
 }
 
 fn save_settings(app: &App) {
+    if app.settings_broken {
+        log("settings file has errors; not saving over it");
+        return;
+    }
     let p = &app.palette;
     let palette = PaletteSettings {
         items: p.palette.items.iter().map(|i| i.name()).collect(),
@@ -330,6 +348,10 @@ fn save_settings(app: &App) {
 pub const SETTINGS_TITLE: &str = "screenpen settings";
 
 fn open_settings(app: &mut App) {
+    // A normal window would open under the topmost overlay and be unreachable.
+    if app.active {
+        hide(app);
+    }
     save_settings(app);
     let existing = unsafe { FindWindowW(null(), wide(SETTINGS_TITLE).as_ptr()) };
     if !existing.is_null() {
@@ -485,6 +507,12 @@ fn create_overlays(state: &ToolState) -> Vec<Overlay> {
 
 fn rebuild_overlays(app: &mut App) {
     log("display change: rebuilding overlays (drawings are kept per monitor position)");
+    // The palette is owned by an overlay, and destroying a window destroys the
+    // windows it owns: detach it first.
+    unsafe { SetWindowLongPtrW(app.palette.hwnd, GWLP_HWNDPARENT, 0) };
+    app.pressed = None;
+    // The frozen images belong to the old monitor layout.
+    app.frozen = false;
     let mut old = std::mem::take(&mut app.overlays);
     app.overlays = create_overlays(&app.state);
     for o in &mut app.overlays {
@@ -499,7 +527,8 @@ fn rebuild_overlays(app: &mut App) {
         unsafe { DestroyWindow(o.hwnd) };
     }
     if app.active {
-        show(app);
+        // Not `show`: that would forget the window behind us and leave ghost mode.
+        reshow(app);
     }
 }
 
@@ -567,7 +596,12 @@ fn paint(o: &mut Overlay, repaint: Repaint) {
 }
 
 fn show(app: &mut App) {
-    app.previous = unsafe { GetForegroundWindow() };
+    let front = unsafe { GetForegroundWindow() };
+    // Started from the tray or with our own window in front: keep the last real app,
+    // so slide keys and the focus on hide go back to it.
+    if !is_ours_or_shell(app, front) {
+        app.previous = front;
+    }
     let fullscreen = covered_monitor(app.previous);
     log(&format!(
         "show: previous {:?} class {:?}, covers a monitor: {}",
@@ -580,7 +614,16 @@ fn show(app: &mut App) {
     app.ghost = false;
     for o in &mut app.overlays {
         o.full_height = fullscreen.is_some_and(|r| same_rect(r, o.monitor));
-        set_click_through(o.hwnd, false);
+    }
+    reshow(app);
+    focus_overlay_under_cursor(app);
+    update_tray(app);
+}
+
+/// Shows every overlay and the palette in the current mode (drawing or ghost).
+fn reshow(app: &mut App) {
+    for o in &app.overlays {
+        set_click_through(o.hwnd, app.ghost);
     }
     refresh_all(app);
     for o in &app.overlays {
@@ -598,8 +641,28 @@ fn show(app: &mut App) {
         }
     }
     show_palette(app);
-    focus_overlay_under_cursor(app);
-    update_tray(app);
+}
+
+/// Our windows and the taskbar/tray: not something to hand the focus back to.
+fn is_ours_or_shell(app: &App, hwnd: HWND) -> bool {
+    if hwnd.is_null() {
+        return true;
+    }
+    let ours = app.overlays.iter().any(|o| o.hwnd == hwnd)
+        || [
+            app.palette.hwnd,
+            app.palette.tooltip.hwnd,
+            app.sheet.hwnd,
+            app.tray_hwnd,
+        ]
+        .contains(&hwnd);
+    let shell = [
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "NotifyIconOverflowWindow",
+        "TopLevelWindowForOverflowXamlIsland",
+    ];
+    ours || shell.contains(&class_name(hwnd).as_str())
 }
 
 fn hide(app: &mut App) {
@@ -624,6 +687,9 @@ fn hide(app: &mut App) {
 }
 
 fn set_ghost(app: &mut App, ghost: bool) {
+    if ghost && app.frozen {
+        toggle_freeze(app);
+    }
     app.ghost = ghost;
     app.pressed = None;
     for o in &mut app.overlays {
@@ -635,6 +701,11 @@ fn set_ghost(app: &mut App, ghost: bool) {
         let ok = unsafe { SetForegroundWindow(app.previous) } != 0;
         log(&format!("ghost on: focus back to {:?}: {ok}", app.previous));
     } else {
+        // While in ghost mode the user may have switched apps: slide keys go there now.
+        let front = unsafe { GetForegroundWindow() };
+        if !is_ours_or_shell(app, front) {
+            app.previous = front;
+        }
         focus_overlay_under_cursor(app);
         log("ghost off");
     }
@@ -786,7 +857,10 @@ fn snapshot(app: &mut App, index: usize) {
 
 /// The monitor rect if `hwnd` is a caption-less window covering a whole monitor.
 fn covered_monitor(hwnd: HWND) -> Option<RECT> {
-    if hwnd.is_null() {
+    // The desktop and taskbar cover the monitor without a caption too.
+    if hwnd.is_null()
+        || ["Progman", "WorkerW", "Shell_TrayWnd"].contains(&class_name(hwnd).as_str())
+    {
         return None;
     }
     unsafe {
@@ -1268,11 +1342,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if app.palette.palette.hover.is_some() || app.palette.grip_hover {
                         clear_palette_hover(app);
                     }
-                    let pen = pen_info((wparam & 0xffff) as u32);
-                    on_pointer(app, index, msg, p, flags, pen);
+                    let id = (wparam & 0xffff) as u32;
+                    let pen = pen_info(id);
+                    on_pointer(app, index, msg, p, flags, id, pen);
                 }
             });
         }
+        // The gesture's pointer or mouse capture went elsewhere (lock screen, UAC, a
+        // cancelled pen): drop the gesture, or every later press would be ignored.
+        WM_POINTERCAPTURECHANGED | WM_CAPTURECHANGED => with_app(|app| {
+            if let Some((i, _, _)) = app.pressed
+                && app.overlays.get(i).is_some_and(|o| o.hwnd == hwnd)
+            {
+                app.pressed = None;
+                let o = &mut app.overlays[i];
+                let r = o.canvas.cancel();
+                paint(o, r);
+            }
+        }),
         WM_POINTERLEAVE => with_app(|app| {
             if hwnd == app.palette.hwnd && app.palette.drag.is_none() {
                 clear_palette_hover(app);
@@ -1354,7 +1441,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }),
         WM_DISPLAYCHANGE => with_app(|app| app.rebuild = true),
         // Our windows already match their monitor; don't take the suggested rect.
-        WM_DPICHANGED => handled = Some(0),
+        WM_DPICHANGED => with_app(|app| {
+            handled = Some(0);
+            if app.overlays.iter().any(|o| o.hwnd == hwnd) {
+                app.rebuild = true;
+            }
+        }),
         _ => {}
     }
     handled.unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
@@ -1388,6 +1480,7 @@ fn on_pointer(
     msg: u32,
     screen: POINT,
     flags: usize,
+    id: u32,
     pen: Option<(f32, bool)>,
 ) {
     if app.ghost {
@@ -1415,7 +1508,7 @@ fn on_pointer(
                 return;
             };
             pointer.double_click = button == Button::Left && is_double_click(app, screen);
-            app.pressed = Some((index, button));
+            app.pressed = Some((index, button, id));
             let hwnd = app.overlays[index].hwnd;
             unsafe {
                 SetCapture(hwnd);
@@ -1428,18 +1521,25 @@ fn on_pointer(
                 .canvas
                 .pointer_down(&app.state, pointer, button)
         }
+        // Only the pointer that started the gesture moves it: a palm or a second
+        // finger on the same screen doesn't.
         WM_POINTERUPDATE => match app.pressed {
-            Some((i, _)) if i == index => {
+            Some((i, _, p)) if i == index && p == id => {
                 app.overlays[index].canvas.pointer_move(&app.state, pointer)
             }
             Some(_) => return,
             None => app.overlays[index].canvas.hover(&app.state, pointer),
         },
         WM_POINTERUP => match app.pressed {
-            Some((i, _)) if i == index => {
+            Some((i, _, p)) if i == index && p == id => {
                 app.pressed = None;
                 unsafe { ReleaseCapture() };
-                app.overlays[index].canvas.pointer_up(&app.state, pointer)
+                let canvas = &mut app.overlays[index].canvas;
+                if flags & POINTER_FLAG_CANCELED != 0 {
+                    canvas.cancel()
+                } else {
+                    canvas.pointer_up(&app.state, pointer)
+                }
             }
             _ => return,
         },

@@ -3,7 +3,7 @@
 Draw on top of the screen during presentations, demos and screen recordings.
 A Rust port of [ScreenInk](https://github.com/volyx/ScreenInk) by volyx, ported with the author's permission.
 
-Status: early. Windows 11 and Linux (X11, Wayland with layer-shell), macOS next. See [PLAN.md](PLAN.md).
+Status: early. Windows 11, macOS and Linux (X11, Wayland with layer-shell). See [PLAN.md](PLAN.md).
 
 ## Try it on Windows
 
@@ -48,6 +48,15 @@ Hold the right mouse button (or use the pen's eraser end) to erase with any tool
 Keys are physical: P is the pen on any keyboard layout.
 
 The log goes to `%TEMP%\screenpen.log`.
+
+## Try it on macOS
+
+Download `screenpen-<version>-macos-arm64.zip` from Releases, unpack `screenpen.app` and open it
+(right click → Open the first time: the app is signed ad hoc, not notarized). It lives in the menu
+bar: click the icon for the menu. Settings are in `~/Library/Application Support/screenpen/settings.toml`,
+screenshots go to `~/Pictures/screenpen`, the log to `$TMPDIR/screenpen.log`. Freeze and screenshots
+need the Screen Recording permission. Build the app yourself with
+`cargo build --release -p screenpen && scripts/bundle-macos.sh`.
 
 ## Linux
 

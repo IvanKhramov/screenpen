@@ -26,6 +26,7 @@ pub enum T {
     HidePalette,
     Autostart,
     SnapshotSaved,
+    SettingsBroken,
     SnapshotFailed,
     Settings,
     Quit,
@@ -75,12 +76,20 @@ impl Lang {
             (Ru, FadeAfter) => "Через {n} с",
             (En, HidePalette) => "Hide palette from screen sharing",
             (Ru, HidePalette) => "Прятать палитру из демонстрации экрана",
+            (En, SettingsBroken) => {
+                "Settings file has an error; changes aren't saved until it's fixed"
+            }
+            (Ru, SettingsBroken) => {
+                "В файле настроек ошибка; изменения не сохраняются, пока её не исправить"
+            }
             (En, SnapshotSaved) => "Screenshot saved and copied",
             (Ru, SnapshotSaved) => "Снимок сохранён и скопирован",
             (En, SnapshotFailed) => "Screenshot failed",
             (Ru, SnapshotFailed) => "Снимок не получился",
-            (En, Autostart) => "Start with Windows",
-            (Ru, Autostart) => "Запускать вместе с Windows",
+            (En, Autostart) if cfg!(windows) => "Start with Windows",
+            (Ru, Autostart) if cfg!(windows) => "Запускать вместе с Windows",
+            (En, Autostart) => "Start at login",
+            (Ru, Autostart) => "Запускать при входе в систему",
             (En, Settings) => "Settings…",
             (Ru, Settings) => "Настройки…",
             (En, Quit) => "Quit",

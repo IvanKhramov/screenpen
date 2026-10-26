@@ -74,6 +74,8 @@ struct App {
     language: String,
     lang: Lang,
     hide_palette_from_capture: bool,
+    /// The settings file didn't parse: keep the current state and don't overwrite it.
+    settings_broken: bool,
     active: bool,
     ghost: bool,
     /// The screens show a captured image under the ink.
@@ -250,6 +252,7 @@ impl App {
             language: "auto".to_string(),
             lang,
             hide_palette_from_capture: false,
+            settings_broken: false,
             active: false,
             ghost: false,
             frozen: false,
@@ -353,8 +356,16 @@ fn chord_text(app: &App, action: Action) -> String {
 fn load_settings(app: &mut App) {
     let (settings, error) = Settings::load(&app.settings_path);
     if let Some(e) = error {
-        log(&format!("settings not loaded, using defaults: {e}"));
+        // Keep what we have and stop saving until the file is fixed, or the next
+        // save would replace the user's file with defaults.
+        log(&format!("settings not loaded, keeping current ones: {e}"));
+        if !app.settings_broken {
+            tray::notify(app.lang.t(T::SettingsBroken), &e);
+        }
+        app.settings_broken = true;
+        return;
     }
+    app.settings_broken = false;
     let before = app.state.shortcuts.clone();
     let mut state = ToolState {
         whiteboard: app.state.whiteboard,
@@ -387,6 +398,10 @@ fn load_settings(app: &mut App) {
 }
 
 fn save_settings(app: &App) {
+    if app.settings_broken {
+        log("settings file has errors; not saving over it");
+        return;
+    }
     let p = &app.palette;
     let palette = PaletteSettings {
         items: p.palette.items.iter().map(|i| i.name()).collect(),
@@ -406,6 +421,10 @@ fn save_settings(app: &App) {
 }
 
 fn open_settings(app: &mut App) {
+    // The settings window would open under the overlay and be unreachable.
+    if app.active {
+        hide(app);
+    }
     save_settings(app);
     if let Some(child) = &mut app.settings_window
         && matches!(child.try_wait(), Ok(None))
@@ -780,6 +799,10 @@ fn on_palette_pointer(app: &mut App, kind: PointerKind, screen: (i32, i32)) {
             save_settings(app);
         }
         PointerKind::Leave if app.palette.drag.is_none() => clear_palette_hover(app),
+        PointerKind::Lost => {
+            app.palette.drag = None;
+            clear_palette_hover(app);
+        }
         _ => {}
     }
 }
@@ -1016,10 +1039,20 @@ fn on_pointer(app: &mut App, index: usize, kind: PointerKind, at: (i32, i32), mo
             Some(_) => return,
             None => app.overlays[index].canvas.hover(&app.state, pointer),
         },
-        PointerKind::Up(_) => match app.pressed {
-            Some((i, _)) if i == index => {
+        // Only the button that started the gesture ends it.
+        PointerKind::Up(b) => match app.pressed {
+            Some((i, button)) if i == index && button_number(button) == b => {
                 app.pressed = None;
                 app.overlays[index].canvas.pointer_up(&app.state, pointer)
+            }
+            _ => return,
+        },
+        // Something else took the pointer mid-gesture: drop it instead of drawing on.
+        PointerKind::Lost => match app.pressed {
+            Some((i, _)) if i == index => {
+                app.pressed = None;
+                log("pointer grab lost: gesture cancelled");
+                app.overlays[index].canvas.cancel()
             }
             _ => return,
         },
@@ -1033,6 +1066,13 @@ fn on_pointer(app: &mut App, index: usize, kind: PointerKind, at: (i32, i32), mo
     );
     if matches!(kind, PointerKind::Up(_)) {
         update_tick(app);
+    }
+}
+
+fn button_number(button: Button) -> u8 {
+    match button {
+        Button::Left => 1,
+        Button::Right => 3,
     }
 }
 

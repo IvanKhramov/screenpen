@@ -16,8 +16,8 @@ use x11rb::errors::{ConnectionError, ReplyOrIdError};
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ButtonPressEvent, ChangeWindowAttributesAux, ClipOrdering, ConfigureWindowAux,
     ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode, GrabStatus, ImageFormat,
-    KeyPressEvent, ModMask, PropMode, SelectionNotifyEvent, SelectionRequestEvent, StackMode,
-    VisualClass, Window, WindowClass,
+    KeyPressEvent, ModMask, NotifyMode, PropMode, SelectionNotifyEvent, SelectionRequestEvent,
+    StackMode, VisualClass, Window, WindowClass,
 };
 use x11rb::protocol::{Event as XEvent, randr, shape, xkb, xtest};
 use x11rb::rust_connection::RustConnection;
@@ -838,7 +838,12 @@ impl Display for X11 {
             }),
             XEvent::LeaveNotify(e) => self.win_of(e.event).map(|win| Event::Pointer {
                 win,
-                kind: PointerKind::Leave,
+                // Another client's active grab ends our implicit one mid-gesture.
+                kind: if e.mode == NotifyMode::GRAB {
+                    PointerKind::Lost
+                } else {
+                    PointerKind::Leave
+                },
                 at: (e.root_x as i32, e.root_y as i32),
                 mods: mods(u16::from(e.state)),
             }),

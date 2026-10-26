@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::ptr::null_mut;
 
 use tiny_skia::Pixmap;
-use windows_sys::Win32::Foundation::{HWND, RECT, SYSTEMTIME};
+use windows_sys::Win32::Foundation::{GlobalFree, HWND, RECT, SYSTEMTIME};
 use windows_sys::Win32::Graphics::Dwm::DwmFlush;
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, GetDC, ReleaseDC, SRCCOPY,
@@ -106,6 +106,7 @@ pub fn copy_to_clipboard(bgra: &Pixmap, owner: HWND) -> bool {
         }
         let dst = GlobalLock(memory).cast::<u8>();
         if dst.is_null() {
+            GlobalFree(memory);
             return false;
         }
         std::ptr::copy_nonoverlapping(
@@ -124,11 +125,25 @@ pub fn copy_to_clipboard(bgra: &Pixmap, owner: HWND) -> bool {
             );
         }
         GlobalUnlock(memory);
-        if OpenClipboard(owner) == 0 {
+        // Another app may hold the clipboard for a moment.
+        let mut open = false;
+        for _ in 0..5 {
+            if OpenClipboard(owner) != 0 {
+                open = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !open {
+            GlobalFree(memory);
             return false;
         }
         EmptyClipboard();
+        // On success the clipboard owns the memory; otherwise it's still ours.
         let ok = !SetClipboardData(CF_DIB as u32, memory).is_null();
+        if !ok {
+            GlobalFree(memory);
+        }
         CloseClipboard();
         ok
     }

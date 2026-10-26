@@ -1,17 +1,32 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-// Platform-neutral app logic, used by the Windows and Linux backends.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+// Platform-neutral app logic, shared by the platform backends.
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 mod canvas;
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 mod config;
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 mod i18n;
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 mod palette;
 mod platform;
 mod settings_ui;
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 mod state;
 
 fn main() {
