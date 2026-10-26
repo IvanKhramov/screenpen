@@ -38,6 +38,7 @@ They are stored in `%APPDATA%\screenpen\settings.toml`.
 | Ctrl+Z · Ctrl+Shift+Z | Undo · Redo |
 | Ctrl+A · Ctrl+] · Delete | Select all · Bring to front · Delete the selection |
 | W · S · F | Whiteboard · Spotlight (wheel resizes it) · Freeze the screen |
+| M | Magnifier (wheel zooms; Windows and macOS) |
 | Ctrl+S | Screenshot with the drawing: saved to Pictures\screenpen and copied |
 | G · Ctrl+Alt+Shift+G | Ghost mode on (clicks go through) · off |
 | PgUp · PgDn · arrows | Sent to the window behind (flip slides) |
@@ -76,3 +77,10 @@ Download `screenpen-<version>-linux-x64.tar.gz` from Releases, unpack it and run
 ## License
 
 MIT
+
+## Snapshots
+
+Ctrl+S saves the screen with the drawing to `Pictures/screenpen` and copies it. The settings
+window's Snapshots tab lists them: Restore puts a snapshot back on screen, frozen, with the
+drawing editable; PDF exports the drawing as vectors over the screen image. From a script:
+`screenpen --restore <snapshot-name>`.

@@ -40,6 +40,16 @@ impl Document {
         self.replace(next);
     }
 
+    /// Adds several annotations as one undoable step (restoring a snapshot).
+    pub fn insert_all(&mut self, annotations: Vec<Annotation>) {
+        if annotations.is_empty() {
+            return;
+        }
+        let mut next = self.annotations.clone();
+        next.extend(annotations.into_iter().map(Arc::new));
+        self.replace(next);
+    }
+
     pub fn remove(&mut self, ids: &HashSet<AnnotationId>) {
         let remaining: Vec<_> = self
             .annotations

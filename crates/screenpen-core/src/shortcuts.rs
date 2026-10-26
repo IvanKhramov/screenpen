@@ -214,6 +214,8 @@ pub enum Action {
     Spotlight,
     /// Hold the current screen image under the ink.
     Freeze,
+    /// A round lens that follows the pointer and enlarges the screen under it.
+    Magnifier,
     /// Save the screen with the ink to a PNG and copy it to the clipboard.
     Snapshot,
     Help,
@@ -257,6 +259,7 @@ impl Action {
                     Action::Whiteboard => "whiteboard",
                     Action::Spotlight => "spotlight",
                     Action::Freeze => "freeze",
+                    Action::Magnifier => "magnifier",
                     Action::Snapshot => "snapshot",
                     Action::Help => "help",
                     Action::ToggleDrawing => "toggle_drawing",
@@ -335,6 +338,7 @@ impl Default for Shortcuts {
             (Action::Whiteboard, key('W')),
             (Action::Spotlight, key('S')),
             (Action::Freeze, key('F')),
+            (Action::Magnifier, key('M')),
             (Action::Snapshot, Some(Chord::ctrl(Char('S')))),
             (
                 Action::Help,

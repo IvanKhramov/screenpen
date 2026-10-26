@@ -4,8 +4,6 @@
 //! of it. It needs the Screen Recording permission; without it macOS would hand back
 //! only the wallpaper, so we ask for the permission and capture nothing.
 
-use std::path::PathBuf;
-
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
@@ -60,28 +58,19 @@ pub fn screen(frame: Frame, below: isize, size: (u32, u32)) -> Result<Pixmap, St
     Ok(pixmap)
 }
 
-fn snapshot_path() -> PathBuf {
+/// screenpen-YYYY-MM-DD-HHmmss in local time.
+pub fn snapshot_stem() -> String {
     let formatter = NSDateFormatter::new();
     formatter.setDateFormat(Some(&NSString::from_str("yyyy-MM-dd-HHmmss")));
-    let stamp = formatter.stringFromDate(&NSDate::now());
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Pictures")
-        .join("screenpen")
-        .join(format!("screenpen-{stamp}.png"))
+    format!("screenpen-{}", formatter.stringFromDate(&NSDate::now()))
 }
 
-/// Writes the image to ~/Pictures/screenpen and puts it on the pasteboard.
-pub fn save(image: &Pixmap) -> Result<PathBuf, String> {
-    let png = image.encode_png().map_err(|e| e.to_string())?;
-    let path = snapshot_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, &png).map_err(|e| e.to_string())?;
+/// Puts an RGBA image on the pasteboard as PNG.
+pub fn copy_to_pasteboard(image: &Pixmap) -> bool {
+    let Ok(png) = image.encode_png() else {
+        return false;
+    };
     let pasteboard = NSPasteboard::generalPasteboard();
     pasteboard.clearContents();
-    pasteboard.setData_forType(Some(&NSData::from_vec(png)), unsafe { NSPasteboardTypePNG });
-    Ok(path)
+    pasteboard.setData_forType(Some(&NSData::from_vec(png)), unsafe { NSPasteboardTypePNG })
 }

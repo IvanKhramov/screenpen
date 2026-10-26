@@ -2459,6 +2459,7 @@ dependencies = [
  "rustix 1.1.5",
  "screenpen-core",
  "serde",
+ "serde_json",
  "smithay-client-toolkit",
  "tiny-skia",
  "toml",
@@ -2474,6 +2475,7 @@ name = "screenpen-core"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
+ "miniz_oxide 0.8.9",
  "serde",
  "serde_json",
  "swash",

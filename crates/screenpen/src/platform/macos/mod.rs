@@ -40,7 +40,11 @@ use tiny_skia::Pixmap;
 use crate::canvas::{Button, Canvas, Pointer, Repaint, Request, typing_action};
 use crate::config::{PaletteSettings, Settings};
 use crate::i18n::{Lang, T};
-use crate::palette::{Hit, Item, Look, Palette, render_cheat_sheet, render_tooltip};
+use crate::palette::{
+    Hit, Item, LENS_RADIUS, LENS_ZOOM, Look, Palette, render_cheat_sheet, render_lens,
+    render_tooltip,
+};
+use crate::snapshots;
 use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState};
 use hotkey::HotKeys;
 use tray::{Command, MenuState, Mode, Tray};
@@ -136,6 +140,10 @@ struct App {
     ghost: bool,
     /// The screens show a captured image under the ink.
     frozen: bool,
+    /// The magnifier lens (made on first use), whether it's on, and its zoom.
+    lens: Option<ui::Popup>,
+    lens_on: bool,
+    lens_zoom: f32,
     /// The pen near the tablet is turned to its eraser end.
     eraser: bool,
     /// Overlay index of the gesture in progress.
@@ -197,6 +205,9 @@ pub fn run() {
         active: false,
         ghost: false,
         frozen: false,
+        lens: None,
+        lens_on: false,
+        lens_zoom: 2.0,
         eraser: false,
         pressed: None,
         hide_palette_from_capture: false,
@@ -487,7 +498,38 @@ fn on_settings_changed() {
             app.sheet.hide();
         }
         update_tray(app);
+        if let Some(stem) = snapshots::take_restore_request() {
+            restore_snapshot(app, &stem);
+        }
     });
+}
+
+/// Puts a snapshot back on the screen it fits (same size), frozen, with its ink editable.
+fn restore_snapshot(app: &mut App, stem: &str) {
+    let (data, background) = match snapshots::load(stem) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            log(&format!("snapshot {stem} not restored: {e}"));
+            return;
+        }
+    };
+    if !app.active {
+        show(app);
+    }
+    let fits = |o: &Overlay| o.canvas.width() == data.width && o.canvas.height() == data.height;
+    let index = app
+        .overlays
+        .iter()
+        .position(fits)
+        .unwrap_or_else(|| focused_overlay(app));
+    let Some(o) = app.overlays.get_mut(index) else {
+        return;
+    };
+    let r = o.canvas.restore(data.annotations, background);
+    paint(o, r);
+    app.frozen = app.overlays.iter().any(|o| o.canvas.backdrop().is_some());
+    render_palette(app);
+    log(&format!("snapshot {stem} restored on screen {index}"));
 }
 
 // MARK: overlays
@@ -626,6 +668,10 @@ fn show(app: &mut App) {
 }
 
 fn hide(app: &mut App) {
+    app.lens_on = false;
+    if let Some(lens) = &mut app.lens {
+        lens.hide();
+    }
     app.active = false;
     app.pressed = None;
     if app.frozen {
@@ -706,7 +752,7 @@ fn focus_overlay_under_cursor(app: &App) {
 
 /// One timer drives auto-fade (slow) and the laser fade-out (smooth).
 fn update_fade_timer(app: &mut App) {
-    let animating = app.overlays.iter().any(|o| o.canvas.animating());
+    let animating = app.overlays.iter().any(|o| o.canvas.animating()) || app.lens_on;
     let wanted = match (app.active, animating, app.state.auto_fade) {
         (false, _, _) => None,
         (true, true, _) => Some(0.016),
@@ -735,6 +781,7 @@ fn update_fade_timer(app: &mut App) {
 
 fn on_tick() {
     with_app(|app| {
+        update_magnifier(app);
         for o in &mut app.overlays {
             let animating = o.canvas.animating();
             let (repaint, _) = o.canvas.tick();
@@ -745,6 +792,58 @@ fn on_tick() {
         }
         update_fade_timer(app);
     });
+}
+
+fn toggle_magnifier(app: &mut App) {
+    app.lens_on = !app.lens_on;
+    if app.lens_on {
+        update_magnifier(app);
+    } else if let Some(lens) = &mut app.lens {
+        lens.hide();
+    }
+    update_fade_timer(app);
+    render_palette(app);
+}
+
+/// Captures the screen around the pointer below our overlay and shows it enlarged in
+/// a round lens; called from the animation timer while the lens is on.
+fn update_magnifier(app: &mut App) {
+    if !app.lens_on {
+        return;
+    }
+    let at = mouse(app.mtm);
+    let Some(o) = app.overlays.iter().find(|o| o.frame.contains(at)) else {
+        return;
+    };
+    let scale = ui::scale_at(app.mtm, at);
+    let half = (LENS_RADIUS / app.lens_zoom) as f64;
+    let source = Frame {
+        x: at.0 - half,
+        y: at.1 - half,
+        w: half * 2.0,
+        h: half * 2.0,
+    };
+    let px = ((half * 2.0) as f32 * scale).max(1.0) as u32;
+    let image = match capture::screen(source, o.panel.windowNumber(), (px, px)) {
+        Ok(image) => image,
+        Err(e) => {
+            // Usually the Screen Recording permission; turn off rather than retry 60 times a second.
+            log(&format!("magnifier: {e}"));
+            app.lens_on = false;
+            let l = app.lang;
+            notify(app, l.t(T::MagnifierUnavailable), &e);
+            render_palette(app);
+            return;
+        }
+    };
+    let diameter = (LENS_RADIUS * 2.0 * scale) as u32;
+    let Some(lens_image) = render_lens(&image, diameter) else {
+        return;
+    };
+    let mtm = app.mtm;
+    let lens = app.lens.get_or_insert_with(|| ui::Popup::new(mtm, true));
+    let r = LENS_RADIUS as f64;
+    lens.show(lens_image, scale, (at.0 - r, at.1 - r));
 }
 
 fn toggle_freeze(app: &mut App) {
@@ -777,8 +876,26 @@ fn snapshot(app: &mut App, index: usize) {
         capture::screen(o.frame, o.panel.windowNumber(), size).map(Some)
     };
     let result = screen.and_then(|screen| {
+        // The clean screen goes into the snapshot too, so it can be restored and exported.
+        let background = o.canvas.backdrop().cloned().or_else(|| screen.clone());
+        let annotations: Vec<_> = o
+            .canvas
+            .doc
+            .annotations()
+            .iter()
+            .map(|a| (**a).clone())
+            .collect();
         let image = o.canvas.compose(screen).ok_or("out of memory")?;
-        capture::save(&image)
+        capture::copy_to_pasteboard(&image);
+        snapshots::save(
+            &capture::snapshot_stem(),
+            &image,
+            background.as_ref(),
+            ChannelOrder::Rgba,
+            &annotations,
+            o.canvas.scale(),
+        )
+        .map_err(|e| e.to_string())
     });
     let l = app.lang;
     match result {
@@ -800,6 +917,7 @@ fn look(app: &App) -> Look {
         tool: app.state.tool,
         bold: app.state.text_style.bold,
         italic: app.state.text_style.italic,
+        magnifier: app.lens_on,
         spotlight: app
             .overlays
             .first()
@@ -1017,6 +1135,7 @@ fn run_action(app: &mut App, index: usize, action: Action) {
             render_palette(app);
         }
         Some(Request::ToggleFreeze) => toggle_freeze(app),
+        Some(Request::ToggleMagnifier) => toggle_magnifier(app),
         Some(Request::Snapshot) => snapshot(app, index),
         Some(Request::StateChanged) => {
             // Tool, color or width changed: other screens drop their gestures.
@@ -1167,7 +1286,12 @@ fn on_input(view: &PixelView, event: &NSEvent, input: Input) {
             Input::Wheel => {
                 let dy = event.scrollingDeltaY();
                 let ctrl = keys::mods(event).ctrl;
-                if !ctrl && dy != 0.0 && app.overlays[index].canvas.spotlight_on() {
+                if !ctrl && dy != 0.0 && app.lens_on {
+                    let (min, max, step) = LENS_ZOOM;
+                    let next = app.lens_zoom + if dy > 0.0 { step } else { -step };
+                    app.lens_zoom = next.clamp(min, max);
+                    update_magnifier(app);
+                } else if !ctrl && dy != 0.0 && app.overlays[index].canvas.spotlight_on() {
                     let o = &mut app.overlays[index];
                     o.canvas.resize_spotlight(dy > 0.0);
                     paint(o, Repaint::Full);

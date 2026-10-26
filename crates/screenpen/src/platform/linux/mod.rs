@@ -31,6 +31,7 @@ use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request, typing_acti
 use crate::config::{PaletteSettings, Settings};
 use crate::i18n::{Lang, T};
 use crate::palette::{Hit, Item, Look, Palette, render_cheat_sheet, render_tooltip};
+use crate::snapshots;
 use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState};
 
 const GLOBAL_ACTIONS: [Action; 3] = [Action::ToggleDrawing, Action::ExitGhost, Action::Quit];
@@ -452,6 +453,34 @@ fn reload_settings(app: &mut App) {
         app.sheet.hide(app.display.as_mut());
     }
     update_tray(app);
+    if let Some(stem) = snapshots::take_restore_request() {
+        restore_snapshot(app, &stem);
+    }
+}
+
+/// Puts a snapshot back on the screen it fits (same size), frozen, with its ink editable.
+fn restore_snapshot(app: &mut App, stem: &str) {
+    let (data, background) = match snapshots::load(stem) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            log(&format!("snapshot {stem} not restored: {e}"));
+            return;
+        }
+    };
+    if !app.active {
+        show(app);
+    }
+    let fits = |o: &Overlay| o.canvas.width() == data.width && o.canvas.height() == data.height;
+    let index = app.overlays.iter().position(fits).unwrap_or(app.focus);
+    let backdrop = background.map(|bg| snapshots::to_rgba(&bg, ChannelOrder::Bgra));
+    let Some(o) = app.overlays.get_mut(index) else {
+        return;
+    };
+    let r = o.canvas.restore(data.annotations, backdrop);
+    paint(app.display.as_mut(), index, o, r);
+    app.frozen = app.overlays.iter().any(|o| o.canvas.backdrop().is_some());
+    render_palette(app);
+    log(&format!("snapshot {stem} restored on screen {index}"));
 }
 
 // MARK: overlays
@@ -685,16 +714,34 @@ fn snapshot(app: &mut App, index: usize) {
         let area = o.monitor.area;
         app.display.capture(&[area]).pop().flatten()
     };
-    let result = app.overlays[index]
+    let o = &app.overlays[index];
+    // The clean screen goes into the snapshot too, so it can be restored and exported.
+    let background = o.canvas.backdrop().cloned().or_else(|| screen.clone());
+    let annotations: Vec<_> = o
+        .canvas
+        .doc
+        .annotations()
+        .iter()
+        .map(|a| (**a).clone())
+        .collect();
+    let scale = o.canvas.scale();
+    let result = o
         .canvas
         .compose(screen)
         .ok_or_else(|| "out of memory".to_string())
         .and_then(|image| {
             let rgba = capture::to_rgba(&image);
             let copied = rgba.encode_png().is_ok_and(|png| app.display.copy_png(png));
-            capture::save_png(&rgba)
-                .map(|path| (path, copied))
-                .map_err(|e| e.to_string())
+            snapshots::save(
+                &capture::snapshot_stem(),
+                &image,
+                background.as_ref(),
+                ChannelOrder::Bgra,
+                &annotations,
+                scale,
+            )
+            .map(|path| (path, copied))
+            .map_err(|e| e.to_string())
         });
     let l = app.lang;
     match result {
@@ -719,6 +766,7 @@ fn look(app: &App) -> Look {
         tool: app.state.tool,
         bold: app.state.text_style.bold,
         italic: app.state.text_style.italic,
+        magnifier: false,
         spotlight: app
             .overlays
             .first()
@@ -921,6 +969,11 @@ fn run_action(app: &mut App, index: usize, action: Action) {
             update_tray(app);
         }
         Some(Request::Help) => toggle_sheet(app, index),
+        // X11 would capture the lens itself and Wayland doesn't allow capture at all.
+        Some(Request::ToggleMagnifier) => {
+            log("magnifier: not available on Linux");
+            tray::notify(app.lang.t(T::MagnifierUnavailable), "");
+        }
         Some(Request::ToggleSpotlight) => {
             let on = !app.overlays.iter().any(|o| o.canvas.spotlight_on());
             for (i, o) in app.overlays.iter_mut().enumerate() {

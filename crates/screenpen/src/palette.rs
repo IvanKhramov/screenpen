@@ -34,6 +34,7 @@ impl Item {
                 Action::Ghost,
                 Action::Whiteboard,
                 Action::Spotlight,
+                Action::Magnifier,
                 Action::Freeze,
                 Action::Snapshot,
                 Action::Help,
@@ -86,7 +87,11 @@ impl Item {
                 Action::SelectAll | Action::BringToFront | Action::DeleteSelection | Action::Escape,
             ) => 4,
             Item::Action(
-                Action::Ghost | Action::Whiteboard | Action::Spotlight | Action::Freeze,
+                Action::Ghost
+                | Action::Whiteboard
+                | Action::Spotlight
+                | Action::Magnifier
+                | Action::Freeze,
             ) => 5,
             _ => 6,
         }
@@ -129,6 +134,7 @@ pub struct Look {
     pub bold: bool,
     pub italic: bool,
     pub spotlight: bool,
+    pub magnifier: bool,
     pub frozen: bool,
     pub color_index: usize,
     pub colors: [Rgba; 9],
@@ -251,6 +257,7 @@ impl Palette {
                 Item::Action(Action::Ghost) => look.ghost,
                 Item::Action(Action::Whiteboard) => look.whiteboard,
                 Item::Action(Action::Spotlight) => look.spotlight,
+                Item::Action(Action::Magnifier) => look.magnifier,
                 Item::Action(Action::Bold) => look.bold,
                 Item::Action(Action::Italic) => look.italic,
                 Item::Action(Action::Freeze) => look.frozen,
@@ -698,6 +705,26 @@ fn draw_icon(
             );
             fill(pixmap, PathBuilder::from_circle(c.x, c.y, 5.0), ink, t, o);
         }
+        Action::Magnifier => {
+            // A magnifying glass.
+            let c = Point::new(cell.x + 14.0, cell.y + 14.0);
+            stroke(
+                pixmap,
+                PathBuilder::from_circle(c.x, c.y, 6.5),
+                ink,
+                2.2,
+                t,
+                o,
+            );
+            stroke(
+                pixmap,
+                polyline(cell, &[(13.0, 13.0), (17.5, 17.5)], false),
+                ink,
+                3.0,
+                t,
+                o,
+            );
+        }
         Action::Freeze => {
             // A snowflake: three crossing lines with small ticks.
             let c = cell.center();
@@ -783,6 +810,55 @@ fn draw_icon(
         }
         Action::Escape | Action::ToggleDrawing | Action::ExitGhost | Action::Quit => {}
     }
+}
+
+// MARK: magnifier lens
+
+/// Lens radius in points, and zoom limits and step for the wheel (no magnifier on Linux).
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub const LENS_RADIUS: f32 = 130.0;
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+pub const LENS_ZOOM: (f32, f32, f32) = (1.5, 6.0, 0.5);
+
+/// `source` (the screen around the pointer) enlarged into a round lens `diameter`
+/// pixels wide, with a thin ring. Byte order follows `source`. Used by the macOS
+/// backend; Windows has the system Magnification API, Linux has no magnifier.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn render_lens(source: &Pixmap, diameter: u32) -> Option<Pixmap> {
+    let mut lens = Pixmap::new(diameter, diameter)?;
+    let d = diameter as f32;
+    let mut mask = tiny_skia::Mask::new(diameter, diameter)?;
+    let circle = PathBuilder::from_circle(d / 2.0, d / 2.0, d / 2.0 - 1.0)?;
+    mask.fill_path(&circle, FillRule::Winding, true, Transform::identity());
+    let k = d / source.width().max(1) as f32;
+    let paint = tiny_skia::PixmapPaint {
+        quality: tiny_skia::FilterQuality::Bilinear,
+        ..Default::default()
+    };
+    lens.draw_pixmap(
+        0,
+        0,
+        source.as_ref(),
+        &paint,
+        Transform::from_scale(k, k),
+        Some(&mask),
+    );
+    let mut ring = Paint {
+        anti_alias: true,
+        ..Paint::default()
+    };
+    ring.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 220));
+    lens.stroke_path(
+        &circle,
+        &ring,
+        &Stroke {
+            width: 2.5,
+            ..Stroke::default()
+        },
+        Transform::identity(),
+        None,
+    );
+    Some(lens)
 }
 
 // MARK: tooltip and cheat sheet
@@ -914,6 +990,7 @@ mod tests {
             bold: false,
             italic: false,
             spotlight: false,
+            magnifier: false,
             frozen: false,
             color_index: 0,
             colors: Rgba::PALETTE,
@@ -985,6 +1062,23 @@ mod tests {
             pixmap.save_png(format!("{dir}/palette.png")).unwrap();
             sheet.save_png(format!("{dir}/cheatsheet.png")).unwrap();
         }
+    }
+
+    #[test]
+    fn lens_is_round_and_enlarged() {
+        let mut source = Pixmap::new(20, 20).unwrap();
+        source.fill(tiny_skia::Color::from_rgba8(0, 0, 255, 255));
+        let lens = render_lens(&source, 100).unwrap();
+        assert_eq!(
+            lens.pixel(50, 50).unwrap().blue(),
+            255,
+            "the middle shows the source"
+        );
+        assert_eq!(
+            lens.pixel(2, 2).unwrap().alpha(),
+            0,
+            "corners are outside the circle"
+        );
     }
 
     #[test]

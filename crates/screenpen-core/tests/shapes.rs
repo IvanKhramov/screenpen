@@ -287,3 +287,62 @@ fn styled_text_has_plate_and_outline_and_reads_old_files() {
     let g: Geometry = serde_json::from_str(old).unwrap();
     assert!(matches!(g, Geometry::Text { style, .. } if style == TextStyle::default()));
 }
+
+#[test]
+fn pdf_has_every_object_where_the_xref_says() {
+    use screenpen_core::pdf::{RgbImage, export};
+    let mut highlight = Style::new(Rgba::YELLOW, 12.0);
+    highlight.opacity = 0.4;
+    let items = [
+        annotation(Geometry::Rectangle {
+            rect: Rect::new(10., 10., 100., 60.),
+            corner_radius: 6.0,
+        }),
+        Annotation::new(
+            Geometry::Line {
+                from: p(0., 100.),
+                to: p(200., 100.),
+            },
+            highlight,
+        ),
+        annotation(Geometry::Arrow {
+            from: p(10., 150.),
+            to: p(200., 160.),
+            control: Some(p(100., 120.)),
+        }),
+    ];
+    let bg = RgbImage {
+        width: 4,
+        height: 3,
+        rgb: vec![128; 4 * 3 * 3],
+    };
+    let pdf = export(&items, 640.0, 400.0, Some(&bg));
+    let text = String::from_utf8_lossy(&pdf);
+    assert!(text.starts_with("%PDF-1.4"));
+    assert!(text.trim_end().ends_with("%%EOF"));
+    // Offsets are bytes: read the ASCII tail directly.
+    let tail_at = pdf.windows(9).rposition(|w| w == b"startxref").unwrap();
+    let tail = std::str::from_utf8(&pdf[tail_at..]).unwrap();
+    let xref: usize = tail.lines().nth(1).unwrap().parse().unwrap();
+    let table = std::str::from_utf8(&pdf[xref..]).unwrap();
+    assert!(table.starts_with("xref"));
+    // Every listed offset starts its object.
+    for (n, line) in table
+        .lines()
+        .skip(3)
+        .take_while(|l| l.ends_with(" n "))
+        .enumerate()
+    {
+        let offset: usize = line[..10].parse().unwrap();
+        assert!(
+            pdf[offset..].starts_with(format!("{} 0 obj", n + 1).as_bytes()),
+            "object {}",
+            n + 1
+        );
+    }
+    assert!(text.contains("/ca 0.4"), "the highlighter's opacity");
+    assert!(text.contains("/Subtype /Image /Width 4 /Height 3"));
+    if let Ok(dir) = std::env::var("SCREENPEN_SELFTEST") {
+        std::fs::write(format!("{dir}/export.pdf"), &pdf).unwrap();
+    }
+}

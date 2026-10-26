@@ -1,6 +1,5 @@
 //! Screen capture for freeze and snapshots, PNG files and the clipboard.
 
-use std::path::PathBuf;
 use std::ptr::null_mut;
 
 use tiny_skia::Pixmap;
@@ -59,31 +58,14 @@ pub fn screen(rect: RECT, exclude: &[HWND]) -> Option<Pixmap> {
 }
 
 /// Pictures\screenpen\screenpen-YYYY-MM-DD-HHMMSS.png
-fn snapshot_path() -> PathBuf {
-    let base = std::env::var_os("USERPROFILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+/// screenpen-YYYY-MM-DD-HHMMSS in local time.
+pub fn snapshot_stem() -> String {
     let mut t: SYSTEMTIME = unsafe { std::mem::zeroed() };
     unsafe { GetLocalTime(&mut t) };
-    let name = format!(
-        "screenpen-{:04}-{:02}-{:02}-{:02}{:02}{:02}.png",
+    format!(
+        "screenpen-{:04}-{:02}-{:02}-{:02}{:02}{:02}",
         t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
-    );
-    base.join("Pictures").join("screenpen").join(name)
-}
-
-/// Writes a BGRA pixmap as a PNG; returns the path.
-pub fn save_png(bgra: &Pixmap) -> std::io::Result<PathBuf> {
-    let path = snapshot_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut rgba = bgra.clone();
-    for px in rgba.data_mut().as_chunks_mut::<4>().0 {
-        px.swap(0, 2);
-    }
-    rgba.save_png(&path).map_err(std::io::Error::other)?;
-    Ok(path)
+    )
 }
 
 /// Puts an opaque BGRA pixmap on the clipboard as a bottom-up 32-bit DIB.

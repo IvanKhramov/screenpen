@@ -27,6 +27,7 @@ pub enum T {
     Autostart,
     SnapshotSaved,
     SettingsBroken,
+    MagnifierUnavailable,
     SnapshotFailed,
     Settings,
     Quit,
@@ -76,6 +77,8 @@ impl Lang {
             (Ru, FadeAfter) => "Через {n} с",
             (En, HidePalette) => "Hide palette from screen sharing",
             (Ru, HidePalette) => "Прятать палитру из демонстрации экрана",
+            (En, MagnifierUnavailable) => "The magnifier isn't available on this system",
+            (Ru, MagnifierUnavailable) => "Лупа недоступна в этой системе",
             (En, SettingsBroken) => {
                 "Settings file has an error; changes aren't saved until it's fixed"
             }
@@ -211,6 +214,7 @@ impl Lang {
             Action::Whiteboard => fixed("Whiteboard", "Белая доска"),
             Action::Spotlight => fixed("Spotlight", "Прожектор"),
             Action::Freeze => fixed("Freeze the screen", "Заморозить экран"),
+            Action::Magnifier => fixed("Magnifier", "Лупа"),
             Action::Snapshot => fixed("Screenshot with drawing", "Снимок экрана с рисунком"),
             Action::Help => fixed("Shortcuts", "Горячие клавиши"),
             Action::ToggleDrawing => {

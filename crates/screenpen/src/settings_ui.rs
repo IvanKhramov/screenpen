@@ -10,6 +10,7 @@ use screenpen_core::{Action, Chord, Key, Rgba, Shortcuts, TextStyle};
 use crate::config::{Settings, default_path, parse_hex};
 use crate::i18n::Lang;
 use crate::palette::{Item, chord_label};
+use crate::snapshots;
 use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState, UI_SCALE, step_ui_scale};
 
 pub const TITLE: &str = "screenpen settings";
@@ -38,6 +39,7 @@ enum Tab {
     Text,
     Shortcuts,
     Palette,
+    Snapshots,
 }
 
 struct SettingsApp {
@@ -56,6 +58,9 @@ struct SettingsApp {
     font_filter: String,
     /// The text preview and what it was rendered for.
     preview: Option<(String, egui::TextureHandle)>,
+    /// Snapshot list (re-read every couple of seconds) and thumbnails by file stem.
+    gallery: Option<(std::time::Instant, Vec<snapshots::Entry>)>,
+    thumbnails: std::collections::HashMap<String, Option<egui::TextureHandle>>,
     /// Modification time of the file as last read or written.
     loaded: Option<std::time::SystemTime>,
     checked: std::time::Instant,
@@ -106,6 +111,8 @@ impl SettingsApp {
             families: None,
             font_filter: String::new(),
             preview: None,
+            gallery: None,
+            thumbnails: std::collections::HashMap::new(),
             checked: std::time::Instant::now(),
         }
     }
@@ -247,6 +254,7 @@ impl SettingsApp {
                     (Tab::Text, "Text", "Текст"),
                     (Tab::Shortcuts, "Shortcuts", "Горячие клавиши"),
                     (Tab::Palette, "Palette", "Палитра"),
+                    (Tab::Snapshots, "Snapshots", "Снимки"),
                 ] {
                     if ui
                         .selectable_label(self.tab == tab, tr(lang, en, ru))
@@ -269,6 +277,7 @@ impl SettingsApp {
                 Tab::Text => self.text(ui, lang),
                 Tab::Shortcuts => self.shortcuts(ui, lang),
                 Tab::Palette => self.palette(ui, lang),
+                Tab::Snapshots => self.snapshots(ui, lang),
             });
         });
     }
@@ -280,7 +289,13 @@ impl SettingsApp {
             return;
         };
         *frame += 1;
-        let tabs = [Tab::General, Tab::Text, Tab::Shortcuts, Tab::Palette];
+        let tabs = [
+            Tab::General,
+            Tab::Text,
+            Tab::Shortcuts,
+            Tab::Palette,
+            Tab::Snapshots,
+        ];
         let index = (*frame / 10) as usize;
         ui.ctx().request_repaint();
         let Some(&tab) = tabs.get(index) else {
@@ -574,6 +589,174 @@ impl SettingsApp {
             let size = texture.size_vec2() / ui.ctx().pixels_per_point();
             ui.image((texture.id(), size));
         }
+    }
+}
+
+// MARK: snapshots
+
+/// Width of a gallery thumbnail, in points.
+const THUMBNAIL: f32 = 200.0;
+
+impl SettingsApp {
+    fn snapshots(&mut self, ui: &mut egui::Ui, lang: Lang) {
+        let stale = self
+            .gallery
+            .as_ref()
+            .is_none_or(|(t, _)| t.elapsed() > std::time::Duration::from_secs(2));
+        if stale {
+            self.gallery = Some((std::time::Instant::now(), snapshots::list()));
+        }
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(tr(
+                    lang,
+                    "Ctrl+S while drawing saves a snapshot here. Restore puts it back on screen, frozen, with the drawing editable.",
+                    "Ctrl+S во время рисования сохраняет снимок сюда. «Восстановить» возвращает его на экран замороженным, рисунок можно править.",
+                ))
+                .weak(),
+            );
+        });
+        if ui
+            .button(tr(lang, "Open folder", "Открыть папку"))
+            .clicked()
+        {
+            let dir = snapshots::dir();
+            let _ = std::fs::create_dir_all(&dir);
+            open_path(&dir);
+        }
+        ui.add_space(8.0);
+        let entries: Vec<(String, PathBuf, bool)> = self
+            .gallery
+            .as_ref()
+            .map(|(_, list)| {
+                list.iter()
+                    .map(|e| (e.stem.clone(), e.image.clone(), e.restorable))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if entries.is_empty() {
+            ui.label(tr(lang, "No snapshots yet.", "Снимков пока нет."));
+            return;
+        }
+        let mut changed = false;
+        for (stem, image, restorable) in entries {
+            ui.horizontal(|ui| {
+                let texture = self.thumbnail(ui.ctx(), &stem, &image);
+                match texture {
+                    Some(t) => {
+                        let size = t.size_vec2() * (THUMBNAIL / t.size_vec2().x);
+                        ui.image((t.id(), size));
+                    }
+                    None => {
+                        ui.allocate_space(egui::vec2(THUMBNAIL, THUMBNAIL * 0.56));
+                    }
+                }
+                ui.vertical(|ui| {
+                    ui.label(&stem);
+                    ui.horizontal(|ui| {
+                        let restore = ui.add_enabled(
+                            restorable,
+                            egui::Button::new(tr(lang, "Restore", "Восстановить")),
+                        );
+                        if restore.clicked() {
+                            self.status = match snapshots::request_restore(&stem) {
+                                Ok(()) => {
+                                    crate::platform::notify_settings_changed();
+                                    None
+                                }
+                                Err(e) => Some(e.to_string()),
+                            };
+                        }
+                        if !restorable {
+                            restore.on_disabled_hover_text(tr(
+                                lang,
+                                "Saved by an older version, without the drawing data",
+                                "Сохранён старой версией, без данных рисунка",
+                            ));
+                        }
+                        if ui
+                            .add_enabled(restorable, egui::Button::new("PDF"))
+                            .clicked()
+                        {
+                            match snapshots::export_pdf(&stem) {
+                                Ok(path) => {
+                                    open_path(&path);
+                                    self.status = None;
+                                }
+                                Err(e) => self.status = Some(e),
+                            }
+                        }
+                        if ui.button(tr(lang, "Open", "Открыть")).clicked() {
+                            open_path(&image);
+                        }
+                        if ui.button(tr(lang, "Delete", "Удалить")).clicked() {
+                            snapshots::delete(&stem);
+                            self.thumbnails.remove(&stem);
+                            changed = true;
+                        }
+                    });
+                });
+            });
+            ui.separator();
+        }
+        if changed {
+            self.gallery = None;
+        }
+    }
+
+    /// A small copy of the snapshot PNG, made once per file.
+    fn thumbnail(
+        &mut self,
+        ctx: &egui::Context,
+        stem: &str,
+        image: &std::path::Path,
+    ) -> Option<egui::TextureHandle> {
+        if let Some(t) = self.thumbnails.get(stem) {
+            return t.clone();
+        }
+        let texture = tiny_skia::Pixmap::load_png(image).ok().and_then(|full| {
+            let px = THUMBNAIL * ctx.pixels_per_point();
+            let k = px / full.width() as f32;
+            let mut small =
+                tiny_skia::Pixmap::new(px as u32, (full.height() as f32 * k).max(1.0) as u32)?;
+            let paint = tiny_skia::PixmapPaint {
+                quality: tiny_skia::FilterQuality::Bilinear,
+                ..Default::default()
+            };
+            small.draw_pixmap(
+                0,
+                0,
+                full.as_ref(),
+                &paint,
+                tiny_skia::Transform::from_scale(k, k),
+                None,
+            );
+            let image = egui::ColorImage::from_rgba_premultiplied(
+                [small.width() as usize, small.height() as usize],
+                small.data(),
+            );
+            Some(ctx.load_texture(
+                format!("snapshot-{stem}"),
+                image,
+                egui::TextureOptions::LINEAR,
+            ))
+        });
+        self.thumbnails.insert(stem.to_string(), texture.clone());
+        texture
+    }
+}
+
+/// Opens a file or folder with the system's default app.
+fn open_path(path: &std::path::Path) {
+    let program = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
+        eprintln!("screenpen settings: can't open {}: {e}", path.display());
     }
 }
 

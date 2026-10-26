@@ -5,6 +5,7 @@
 pub mod annotation;
 pub mod document;
 pub mod geom;
+pub mod pdf;
 pub mod pressure;
 pub mod render;
 pub mod shortcuts;

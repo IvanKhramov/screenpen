@@ -77,6 +77,7 @@ pub enum Request {
     Help,
     ToggleSpotlight,
     ToggleFreeze,
+    ToggleMagnifier,
     Snapshot,
     /// Tool, color or width changed: every screen and the palette should refresh.
     StateChanged,
@@ -602,6 +603,14 @@ impl Canvas {
                 target.fill_path(&path, &caret, FillRule::Winding, t, None);
             }
         }
+    }
+
+    /// Puts a saved snapshot back: its screen image frozen under the ink, its
+    /// annotations added as one undo step.
+    pub fn restore(&mut self, annotations: Vec<Annotation>, backdrop: Option<Pixmap>) -> Repaint {
+        self.cancel();
+        self.doc.insert_all(annotations);
+        self.set_backdrop(backdrop)
     }
 
     /// Holds `image` (or nothing) under the ink. It must match the canvas size.
@@ -1312,6 +1321,7 @@ impl Canvas {
             Action::Help => (Repaint::None, Some(Request::Help)),
             Action::Spotlight => (Repaint::None, Some(Request::ToggleSpotlight)),
             Action::Freeze => (Repaint::None, Some(Request::ToggleFreeze)),
+            Action::Magnifier => (Repaint::None, Some(Request::ToggleMagnifier)),
             Action::Snapshot => (Repaint::None, Some(Request::Snapshot)),
             Action::ToggleDrawing | Action::ExitGhost | Action::Quit => (Repaint::None, None),
         }
