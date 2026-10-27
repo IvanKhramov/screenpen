@@ -8,6 +8,7 @@ pub mod geom;
 pub mod icon;
 pub mod pdf;
 pub mod pressure;
+pub mod recognize;
 pub mod render;
 pub mod shortcuts;
 pub mod snap;

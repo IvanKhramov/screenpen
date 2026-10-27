@@ -1407,7 +1407,8 @@ fn on_pointer(app: &mut App, index: usize, input: Input, event: &NSEvent) {
         _ => return,
     };
     paint(&mut app.overlays[index], repaint);
-    if input == Input::Up {
+    // Down starts the ticks a held stroke needs to straighten.
+    if matches!(input, Input::Up | Input::LeftDown | Input::RightDown) {
         update_fade_timer(app);
     }
 }

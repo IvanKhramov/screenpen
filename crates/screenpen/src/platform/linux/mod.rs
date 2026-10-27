@@ -1165,7 +1165,8 @@ fn on_pointer(app: &mut App, index: usize, kind: PointerKind, at: (i32, i32), mo
         &mut app.overlays[index],
         repaint,
     );
-    if matches!(kind, PointerKind::Up(_)) {
+    // Down starts the ticks a held stroke needs to straighten.
+    if matches!(kind, PointerKind::Up(_) | PointerKind::Down(_)) {
         update_tick(app);
     }
 }

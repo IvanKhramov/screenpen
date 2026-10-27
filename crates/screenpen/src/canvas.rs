@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::f32::consts::SQRT_2;
 
 use screenpen_core::annotation::{AnnotationId, now};
+use screenpen_core::recognize::recognize;
 use screenpen_core::render::{
     ChannelOrder, bounds, draw, hit_test, rounded_rect, segment_outline, skia_color,
 };
@@ -96,6 +97,9 @@ const LASER_POINTS: usize = 600;
 /// Spotlight radius in points, and its limits for the wheel.
 const SPOTLIGHT_RADIUS: f32 = 140.0;
 const SPOTLIGHT_LIMITS: (f32, f32) = (40.0, 600.0);
+/// Holding the pen this still (points) for this long (seconds) straightens the stroke.
+const HOLD_SLOP: f32 = 4.0;
+const HOLD_SECONDS: f64 = 0.5;
 /// Room around a lit box, and its corner radius, in points.
 const FOCUS_PAD: f32 = 6.0;
 const FOCUS_RADIUS: f32 = 10.0;
@@ -117,7 +121,12 @@ enum Gesture {
         filter: PressureFilter,
         pressure: bool,
         last_width: f32,
+        /// Where the pointer stopped moving and since when; held long enough there,
+        /// the stroke straightens into the shape it looks like.
+        still: (Point, f64),
     },
+    /// A held stroke turned into a shape; the button is still down.
+    Straightened(Annotation),
     Shape {
         tool: ToolKind,
         /// Where the shape starts: `pressed`, or the edges the magnet moved it to.
@@ -467,13 +476,41 @@ impl Canvas {
             self.laser.released = None;
         }
         let laser = self.laser.released.is_some();
+        let straightened = self.tick_hold();
         let (repaint, more) = self.tick_fade();
-        (repaint, more || laser)
+        (repaint.union(straightened), more || laser)
     }
 
     /// Whether something animates and needs frequent ticks (not auto-fade's slow ones).
     pub fn animating(&self) -> bool {
-        self.laser.released.is_some()
+        self.laser.released.is_some() || matches!(self.gesture, Gesture::Freehand { .. })
+    }
+
+    /// A stroke held still for a moment becomes a line, rectangle or ellipse.
+    fn tick_hold(&mut self) -> Repaint {
+        let Gesture::Freehand {
+            builder,
+            style,
+            still,
+            ..
+        } = &self.gesture
+        else {
+            return Repaint::None;
+        };
+        if now() - still.1 < HOLD_SECONDS {
+            return Repaint::None;
+        }
+        let Some(geometry) = recognize(builder.points()) else {
+            // Not a shape: stop asking until the pointer moves again.
+            if let Gesture::Freehand { still, .. } = &mut self.gesture {
+                still.1 = f64::INFINITY;
+            }
+            return Repaint::None;
+        };
+        self.gesture = Gesture::Straightened(Annotation::new(geometry, *style));
+        let repaint = self.live_bounds.map_or(Repaint::None, Repaint::Rect);
+        self.clear_live();
+        repaint
     }
 
     fn tick_fade(&mut self) -> (Repaint, bool) {
@@ -559,7 +596,8 @@ impl Canvas {
         match &self.gesture {
             Gesture::Shape {
                 preview: Some(a), ..
-            } => {
+            }
+            | Gesture::Straightened(a) => {
                 if let Some(b) = bounds(a) {
                     add(b);
                 }
@@ -629,7 +667,8 @@ impl Canvas {
         match &self.gesture {
             Gesture::Shape {
                 preview: Some(a), ..
-            } => draw(target, a, t, self.order),
+            }
+            | Gesture::Straightened(a) => draw(target, a, t, self.order),
             Gesture::Move {
                 offset: (dx, dy), ..
             } => {
@@ -947,7 +986,7 @@ impl Canvas {
                 }
                 Repaint::None
             }
-            Gesture::Idle => Repaint::None,
+            Gesture::Idle | Gesture::Straightened(_) => Repaint::None,
             Gesture::TextSelect => {
                 let index = self.text_index(at);
                 if let Some(t) = &mut self.text {
@@ -961,7 +1000,11 @@ impl Canvas {
                 filter,
                 pressure,
                 last_width,
+                still,
             } => {
+                if at.distance(still.0) > HOLD_SLOP {
+                    *still = (at, now());
+                }
                 let width = if *pressure {
                     let pressure = filter.filter(p.pressure);
                     filter.width(style.width, pressure)
@@ -1100,6 +1143,7 @@ impl Canvas {
                 repaint
                     .union(self.commit(Annotation::new(Geometry::Stroke { points, widths }, style)))
             }
+            Gesture::Straightened(a) => self.commit(a),
             Gesture::Shape {
                 tool,
                 pressed,
@@ -1163,6 +1207,7 @@ impl Canvas {
             filter,
             pressure,
             last_width: width,
+            still: (at, now()),
         };
         // Immediate feedback for a click; later segments draw over it.
         let dot = PathBuilder::from_circle(at.x, at.y, (width / 2.0).max(0.25));
@@ -2002,6 +2047,33 @@ mod tests {
         // Again on the same box: back to the circle.
         drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
         assert_eq!(c.focus, None);
+    }
+
+    #[test]
+    fn a_held_stroke_straightens() {
+        let mut c = canvas();
+        let state = ToolState::default();
+        let circle: Vec<Pointer> = (0..=40)
+            .map(|i| {
+                let a = i as f32 / 40.0 * std::f32::consts::TAU;
+                at(200.0 + 120.0 * a.cos(), 150.0 + 80.0 * a.sin())
+            })
+            .collect();
+        c.pointer_down(&state, circle[0], Button::Left);
+        for &p in &circle[1..] {
+            c.pointer_move(&state, p);
+        }
+        assert!(c.animating(), "ticks while the stroke is drawn");
+        assert_eq!(c.tick().0, Repaint::None, "not held long enough yet");
+        std::thread::sleep(std::time::Duration::from_secs_f64(HOLD_SECONDS + 0.05));
+        assert_ne!(c.tick().0, Repaint::None);
+        c.pointer_up(&state, *circle.last().unwrap());
+        assert_eq!(kinds(&c), [AnnotationKind::Ellipse]);
+
+        // Without the hold it stays a stroke.
+        c.doc.remove_all();
+        drag(&mut c, &state, &circle);
+        assert_eq!(kinds(&c), [AnnotationKind::Stroke]);
     }
 
     #[test]

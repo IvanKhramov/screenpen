@@ -1738,7 +1738,8 @@ fn on_pointer(
         _ => return,
     };
     paint(&mut app.overlays[index], repaint);
-    if msg == WM_POINTERUP {
+    // Down starts the ticks a held stroke needs to straighten.
+    if msg == WM_POINTERUP || msg == WM_POINTERDOWN {
         update_fade_timer(app);
     }
 }
