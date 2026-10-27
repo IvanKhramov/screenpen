@@ -13,16 +13,21 @@ Download `screenpen-<version>-windows-x64.exe` from [Releases](https://github.co
 cargo run --release -p screenpen
 ```
 
-screenpen lives in the tray: the icon is yellow when idle, red while drawing and purple in ghost mode.
-Left click toggles drawing, right click opens the menu (whiteboard, dimming, fading, start with Windows, settings, quit).
+The first start opens a short getting-started page. screenpen lives in the tray: the icon is yellow
+when idle, red while drawing and purple in mouse mode. Left click toggles drawing, right click opens
+the menu (whiteboard, dimming, fading, start with Windows, settings, quit).
 
-The palette shows a tooltip with the name and key of every button. Drag it by the dotted grip
-(it snaps to screen edges); double-click the grip to turn it vertical. Press `?` for all shortcuts.
+The palette sits at the bottom of the screen: Mouse, then the drawing tools, pointers (laser,
+spotlight, magnifier), colors and S/M/L widths, undo, and `⋯` for the rest (whiteboard, freeze,
+screenshot, shortcuts, settings). The letter in a button's corner is its key. Shapes share one
+button with a row of kinds above it; the text tool gets a row with size, bold and italic.
+Drag the palette by the dots (it snaps to screen edges); double-click them to turn it vertical.
+Press `?` for all shortcuts.
 
-"Settings…" in the tray (or the gear on the palette) opens the settings window: language, colors,
-width, dimming, fading, every shortcut (click and press the new keys, × turns one off, conflicts
-show in red) and the palette buttons (drag to reorder, add, remove). Changes apply at once.
-They are stored in `%APPDATA%\screenpen\settings.toml`.
+The settings window (tray → Settings, or `⋯` → gear): language, light or dark theme, interface
+scale, colors, width, dimming, fading, every shortcut (click and press the new keys, × turns one
+off, conflicts show in red), the palette buttons with a live preview, text font and style, and
+snapshots. Changes apply at once. They are stored in `%APPDATA%\screenpen\settings.toml`.
 
 | Key | Action |
 |---|---|
@@ -40,7 +45,7 @@ They are stored in `%APPDATA%\screenpen\settings.toml`.
 | W · S · F | Whiteboard · Spotlight (wheel resizes it) · Freeze the screen |
 | M | Magnifier (wheel zooms; Windows and macOS) |
 | Ctrl+S | Screenshot with the drawing: saved to Pictures\screenpen and copied |
-| G · Ctrl+Alt+Shift+G | Ghost mode on (clicks go through) · off |
+| G · Ctrl+Alt+Shift+G | Mouse mode: the drawing stays, clicks go through · back to drawing |
 | PgUp · PgDn · arrows | Sent to the window behind (flip slides) |
 | Esc | Finish typing, deselect, or stop drawing |
 | Ctrl+Alt+Shift+Q | Quit |
@@ -48,6 +53,9 @@ They are stored in `%APPDATA%\screenpen\settings.toml`.
 With the pen: hold Ctrl for a rectangle, Ctrl+Alt for an ellipse, Alt for an arrow.
 Shift makes lines snap to 45° and shapes square. Alt with the arrow tool bends the arrow.
 Hold the right mouse button (or use the pen's eraser end) to erase with any tool. Pen pressure changes the width. Double-click text with the select tool to edit it.
+While typing, text edits like any text field: arrows, Home/End, Ctrl+arrows by words, Shift selects,
+the mouse places the caret and selects, Ctrl+A/C/X/V, Ctrl+Z/Y inside the text, Ctrl+Enter finishes
+(Cmd on a Mac).
 Keys are physical: P is the pen on any keyboard layout.
 
 The log goes to `%TEMP%\screenpen.log`.
