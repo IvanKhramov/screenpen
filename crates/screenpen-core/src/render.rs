@@ -21,6 +21,18 @@ pub enum Fill {
     Contrast,
     /// The contrast color, translucent: the plate behind text.
     Plate,
+    /// One block of a pixelated area.
+    Pixel([u8; 3]),
+}
+
+/// The color a part of `a` is filled with.
+pub fn part_color(a: &Annotation, fill: Fill) -> Rgba {
+    match fill {
+        Fill::Style => a.style.color,
+        Fill::Contrast => a.style.color.contrasting(),
+        Fill::Plate => a.style.color.contrasting().with_alpha(0.55),
+        Fill::Pixel([r, g, b]) => Rgba::rgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -177,6 +189,26 @@ pub fn render_parts(a: &Annotation) -> Vec<RenderPart> {
         Geometry::Stroke { points, widths } => {
             style(stroke_outline(points, widths)).into_iter().collect()
         }
+        Geometry::Pixelate {
+            rect,
+            cols,
+            rows,
+            colors,
+        } => {
+            let (w, h) = (rect.width / *cols as f32, rect.height / *rows as f32);
+            colors
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &color)| {
+                    let (c, r) = ((i as u32 % cols) as f32, (i as u32 / cols) as f32);
+                    let block = tiny_skia::Rect::from_xywh(rect.x + c * w, rect.y + r * h, w, h)?;
+                    Some(RenderPart {
+                        path: PathBuilder::from_rect(block),
+                        fill: Fill::Pixel(color),
+                    })
+                })
+                .collect()
+        }
         Geometry::Line { from, to } => {
             let mut pb = PathBuilder::new();
             pb.move_to(from.x, from.y);
@@ -280,7 +312,7 @@ pub fn bounds(a: &Annotation) -> Option<Rect> {
 pub fn hit_test(a: &Annotation, point: Point, tolerance: f32) -> bool {
     match a.kind() {
         // Glyph outlines have gaps; treat the whole box as the target.
-        AnnotationKind::Text | AnnotationKind::Badge => {
+        AnnotationKind::Text | AnnotationKind::Badge | AnnotationKind::Pixelate => {
             bounds(a).is_some_and(|b| b.inset(-tolerance).contains(point))
         }
         _ => render_parts(a).iter().any(|part| {
@@ -294,16 +326,12 @@ pub fn hit_test(a: &Annotation, point: Point, tolerance: f32) -> bool {
 pub fn draw(pixmap: &mut PixmapMut, a: &Annotation, transform: Transform, order: ChannelOrder) {
     let parts = render_parts(a);
     let paint = |fill: Fill| {
-        let color = match fill {
-            Fill::Style => a.style.color,
-            Fill::Contrast => a.style.color.contrasting(),
-            Fill::Plate => a.style.color.contrasting().with_alpha(0.55),
-        };
         let mut paint = Paint {
-            anti_alias: true,
+            // Smoothed block edges would show seams between neighbours.
+            anti_alias: !matches!(fill, Fill::Pixel(_)),
             ..Paint::default()
         };
-        paint.set_color(skia_color(color, order));
+        paint.set_color(skia_color(part_color(a, fill), order));
         paint
     };
     let opacity = a.style.opacity.clamp(0.0, 1.0);

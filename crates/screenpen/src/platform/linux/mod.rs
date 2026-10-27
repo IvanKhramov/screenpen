@@ -702,7 +702,7 @@ fn feed_magnet(app: &mut App, index: usize, mods: Mods) {
     }
     let area = app.overlays[index].monitor.area;
     let image = app.display.capture(&[area]).pop().flatten();
-    app.overlays[index].canvas.set_screen(image.as_ref());
+    app.overlays[index].canvas.set_screen(image);
     refresh_all(app);
 }
 

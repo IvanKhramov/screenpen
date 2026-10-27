@@ -167,6 +167,8 @@ impl Lang {
             (Ru, Select) => "Выделение",
             (En, Laser) => "Laser pointer",
             (Ru, Laser) => "Лазерная указка",
+            (En, Pixelate) => "Pixelate",
+            (Ru, Pixelate) => "Размытие",
         }
     }
 

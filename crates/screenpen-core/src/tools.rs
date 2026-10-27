@@ -18,10 +18,12 @@ pub enum ToolKind {
     Select,
     /// A fading trail that is never committed.
     Laser,
+    /// Coarse blocks over a part of the screen, to hide it.
+    Pixelate,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 11] = [
+    pub const ALL: [ToolKind; 12] = [
         ToolKind::Pen,
         ToolKind::Highlighter,
         ToolKind::Line,
@@ -33,6 +35,7 @@ impl ToolKind {
         ToolKind::Eraser,
         ToolKind::Select,
         ToolKind::Laser,
+        ToolKind::Pixelate,
     ];
 
     /// Stable identifier for settings files and translations.
@@ -49,6 +52,7 @@ impl ToolKind {
             ToolKind::Eraser => "eraser",
             ToolKind::Select => "select",
             ToolKind::Laser => "laser",
+            ToolKind::Pixelate => "pixelate",
         }
     }
 
@@ -110,6 +114,65 @@ pub fn shape_geometry(
         }
         _ => None,
     }
+}
+
+/// Side of a pixelation block, in points: big enough to make text unreadable.
+pub const PIXEL_BLOCK: f32 = 12.0;
+
+/// Pixelates `rect` of `screen` (pixels at `scale` per point; BGRA when `bgra`).
+/// Without a screen the blocks are a plain grey, which hides as well.
+pub fn pixelate(
+    rect: Rect,
+    screen: Option<&tiny_skia::Pixmap>,
+    scale: f32,
+    bgra: bool,
+) -> Geometry {
+    let rect = rect.standardized();
+    let cols = (rect.width / PIXEL_BLOCK).round().max(1.0) as u32;
+    let rows = (rect.height / PIXEL_BLOCK).round().max(1.0) as u32;
+    let (bw, bh) = (rect.width / cols as f32, rect.height / rows as f32);
+    let mut colors = Vec::with_capacity((cols * rows) as usize);
+    for r in 0..rows {
+        for c in 0..cols {
+            let block = Rect::new(rect.x + c as f32 * bw, rect.y + r as f32 * bh, bw, bh);
+            colors.push(
+                screen
+                    .and_then(|s| average(s, block, scale, bgra))
+                    .unwrap_or([128; 3]),
+            );
+        }
+    }
+    Geometry::Pixelate {
+        rect,
+        cols,
+        rows,
+        colors,
+    }
+}
+
+/// The mean RGB of `block` (points) in `screen`, sampling every other pixel.
+fn average(screen: &tiny_skia::Pixmap, block: Rect, scale: f32, bgra: bool) -> Option<[u8; 3]> {
+    let (w, h) = (screen.width() as i64, screen.height() as i64);
+    let x0 = ((block.x * scale) as i64).clamp(0, w);
+    let y0 = ((block.y * scale) as i64).clamp(0, h);
+    let x1 = (((block.x + block.width) * scale).ceil() as i64).clamp(0, w);
+    let y1 = (((block.y + block.height) * scale).ceil() as i64).clamp(0, h);
+    let data = screen.data();
+    let (mut sum, mut n) = ([0u64; 3], 0u64);
+    for y in (y0..y1).step_by(2) {
+        for x in (x0..x1).step_by(2) {
+            let i = ((y * w + x) * 4) as usize;
+            for k in 0..3 {
+                sum[k] += data[i + k] as u64;
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    let [a, g, b] = sum.map(|v| (v / n) as u8);
+    Some(if bgra { [b, g, a] } else { [a, g, b] })
 }
 
 /// Rotates `end` around `start` to the nearest multiple of 45 degrees, keeping the length.

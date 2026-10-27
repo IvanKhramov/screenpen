@@ -24,11 +24,12 @@ pub enum Item {
     TextSize,
 }
 
-const SHAPES: [ToolKind; 4] = [
+const SHAPES: [ToolKind; 5] = [
     ToolKind::Line,
     ToolKind::Arrow,
     ToolKind::Rectangle,
     ToolKind::Ellipse,
+    ToolKind::Pixelate,
 ];
 
 const MORE: [Item; 5] = [
@@ -904,6 +905,19 @@ fn draw_icon(
             let oval = tiny_skia::Rect::from_xywh(c.x - 8.0, c.y - 5.5, 16.0, 11.0)
                 .and_then(PathBuilder::from_oval);
             stroke(pixmap, oval, ink, 2.0, t, o);
+        }
+        Action::Tool(ToolKind::Pixelate) => {
+            // A checkerboard of blocks.
+            let c = cell.center();
+            for i in 0..3 {
+                for j in 0..3 {
+                    let alpha = if (i + j) % 2 == 0 { 1.0 } else { 0.35 };
+                    let (x, y) = (c.x - 7.5 + i as f32 * 5.0, c.y - 7.5 + j as f32 * 5.0);
+                    let block =
+                        tiny_skia::Rect::from_xywh(x, y, 5.0, 5.0).map(PathBuilder::from_rect);
+                    fill(pixmap, block, ink.with_alpha(ink.alpha * alpha), t, o);
+                }
+            }
         }
         Action::Tool(ToolKind::Text) => fill(pixmap, glyph(cell, "T", 18.0), ink, t, o),
         Action::Tool(ToolKind::Badge) => {

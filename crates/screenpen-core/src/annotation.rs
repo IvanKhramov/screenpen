@@ -72,6 +72,7 @@ pub enum AnnotationKind {
     Ellipse,
     Text,
     Badge,
+    Pixelate,
 }
 
 /// How a text annotation looks beyond its color and size.
@@ -129,6 +130,14 @@ pub enum Geometry {
         format: BadgeFormat,
         radius: f32,
     },
+    /// Coarse blocks over the screen under `rect` (hides what's there): `cols` x `rows`
+    /// RGB colors, row by row.
+    Pixelate {
+        rect: Rect,
+        cols: u32,
+        rows: u32,
+        colors: Vec<[u8; 3]>,
+    },
 }
 
 impl Geometry {
@@ -141,6 +150,7 @@ impl Geometry {
             Geometry::Ellipse { .. } => AnnotationKind::Ellipse,
             Geometry::Text { .. } => AnnotationKind::Text,
             Geometry::Badge { .. } => AnnotationKind::Badge,
+            Geometry::Pixelate { .. } => AnnotationKind::Pixelate,
         }
     }
 
@@ -191,6 +201,17 @@ impl Geometry {
                 number: *number,
                 format: *format,
                 radius: *radius,
+            },
+            Geometry::Pixelate {
+                rect,
+                cols,
+                rows,
+                colors,
+            } => Geometry::Pixelate {
+                rect: rect.offset(dx, dy),
+                cols: *cols,
+                rows: *rows,
+                colors: colors.clone(),
             },
         }
     }

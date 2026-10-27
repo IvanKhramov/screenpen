@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use tiny_skia::PathSegment;
 
 use crate::annotation::Annotation;
-use crate::render::{Fill, render_parts};
+use crate::render::{part_color, render_parts};
 use crate::style::Rgba;
 
 /// An opaque RGB image, rows top to bottom.
@@ -34,11 +34,7 @@ pub fn export(
     let mut alphas: Vec<f32> = Vec::new();
     for a in annotations {
         for part in render_parts(a) {
-            let color = match part.fill {
-                Fill::Style => a.style.color,
-                Fill::Contrast => a.style.color.contrasting(),
-                Fill::Plate => a.style.color.contrasting().with_alpha(0.55),
-            };
+            let color = part_color(a, part.fill);
             let alpha = (color.alpha * a.style.opacity).clamp(0.0, 1.0);
             let gs = alphas.iter().position(|&x| x == alpha).unwrap_or_else(|| {
                 alphas.push(alpha);

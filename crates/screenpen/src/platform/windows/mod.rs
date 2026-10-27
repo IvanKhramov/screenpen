@@ -898,7 +898,7 @@ fn feed_magnet(app: &mut App, index: usize, mods: Mods) {
     if image.is_none() {
         log("magnet: no screen capture");
     }
-    app.overlays[index].canvas.set_screen(image.as_ref());
+    app.overlays[index].canvas.set_screen(image);
 }
 
 fn toggle_freeze(app: &mut App) {

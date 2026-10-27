@@ -137,6 +137,23 @@ fn main() {
             Style::new(Rgba::RED, 4.0),
         ),
         (
+            "pixelate",
+            Geometry::Pixelate {
+                rect: Rect::new(520., 300., 60., 40.),
+                cols: 3,
+                rows: 2,
+                colors: vec![
+                    [200, 40, 40],
+                    [40, 200, 40],
+                    [40, 40, 200],
+                    [240; 3],
+                    [90; 3],
+                    [20; 3],
+                ],
+            },
+            Style::new(Rgba::RED, 4.0),
+        ),
+        (
             "badge roman",
             Geometry::Badge {
                 center: p(570., 120.),

@@ -319,6 +319,7 @@ impl Default for Shortcuts {
             (Action::Tool(ToolKind::Eraser), key('E')),
             (Action::Tool(ToolKind::Select), key('V')),
             (Action::Tool(ToolKind::Laser), key('K')),
+            (Action::Tool(ToolKind::Pixelate), key('B')),
         ];
         for i in 0..9u8 {
             b.push((Action::Color(i), key((b'1' + i) as char)));

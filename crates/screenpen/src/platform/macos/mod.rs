@@ -864,7 +864,7 @@ fn feed_magnet(app: &mut App, index: usize, mods: Mods) {
     let image = capture::screen(o.frame, o.panel.windowNumber(), size)
         .map_err(|e| log(&format!("magnet: no capture: {e}")))
         .ok();
-    o.canvas.set_screen(image.as_ref());
+    o.canvas.set_screen(image);
 }
 
 fn toggle_freeze(app: &mut App) {

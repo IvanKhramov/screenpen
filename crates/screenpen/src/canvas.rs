@@ -19,7 +19,7 @@ use screenpen_core::render::{
 use screenpen_core::shortcuts::next_text_size;
 use screenpen_core::snap::{Edge, SnapMap, Snapped};
 use screenpen_core::text_edit::{Motion, TextBuffer};
-use screenpen_core::tools::shape_geometry;
+use screenpen_core::tools::{pixelate, shape_geometry};
 use screenpen_core::{
     Action, Annotation, AnnotationKind, BadgeFormat, Chord, Document, Geometry, Key, Point,
     PressureFilter, Rect, Rgba, StrokeBuilder, Style, TextStyle, ToolKind,
@@ -216,6 +216,7 @@ fn magnet(state: &ToolState, mods: Mods) -> bool {
                 | ToolKind::Arrow
                 | ToolKind::Rectangle
                 | ToolKind::Ellipse
+                | ToolKind::Pixelate
         )
 }
 
@@ -273,6 +274,8 @@ pub struct Canvas {
     focus: Option<Rect>,
     /// Edges of the screen under the ink, for the magnet; None until first needed.
     snap: Option<SnapMap>,
+    /// The screen under the ink when it was captured for the magnet, for pixelating.
+    screen: Option<Pixmap>,
     /// The box a Ctrl+click would frame, under the pointer.
     snap_hint: Option<Rect>,
     /// Pieces of the edges the magnet holds the pointer to.
@@ -305,6 +308,7 @@ impl Canvas {
             spotlight: None,
             focus: None,
             snap: None,
+            screen: None,
             snap_hint: None,
             guides: Vec::new(),
         })
@@ -321,6 +325,7 @@ impl Canvas {
     /// Frees the full-size buffers while drawing is off; the annotations stay.
     pub fn sleep(&mut self) {
         self.cancel();
+        self.screen = None;
         if let Some(tiny) = Pixmap::new(1, 1) {
             self.cache = tiny;
         }
@@ -934,9 +939,11 @@ impl Canvas {
             ToolKind::Pen if p.mods.ctrl => self.begin_shape(ToolKind::Rectangle, at, true),
             ToolKind::Pen if p.mods.alt => self.begin_shape(ToolKind::Arrow, at, false),
             ToolKind::Pen | ToolKind::Highlighter => self.begin_freehand(state, state.tool, &p, at),
-            tool @ (ToolKind::Line | ToolKind::Arrow | ToolKind::Rectangle | ToolKind::Ellipse) => {
-                self.begin_shape(tool, at, p.mods.ctrl)
-            }
+            tool @ (ToolKind::Line
+            | ToolKind::Arrow
+            | ToolKind::Rectangle
+            | ToolKind::Ellipse
+            | ToolKind::Pixelate) => self.begin_shape(tool, at, p.mods.ctrl),
             ToolKind::Badge => {
                 let a = Annotation::new(
                     Geometry::Badge {
@@ -1044,8 +1051,18 @@ impl Canvas {
                     0.0
                 };
                 let style = state.style(*tool);
-                *preview = shape_geometry(*tool, *start, at, constrain, curved, radius)
-                    .map(|g| Annotation::new(g, style));
+                *preview = if *tool == ToolKind::Pixelate {
+                    let screen = self.backdrop.as_ref().or(self.screen.as_ref());
+                    let bgra = self.order == ChannelOrder::Bgra;
+                    let rect = Rect::from_points(*start, at);
+                    Some(Annotation::new(
+                        pixelate(rect, screen, self.scale, bgra),
+                        style,
+                    ))
+                } else {
+                    shape_geometry(*tool, *start, at, constrain, curved, radius)
+                        .map(|g| Annotation::new(g, style))
+                };
                 Repaint::None // overlays repaint themselves
             }
             Gesture::Erase { ids, radius } => {
@@ -1108,7 +1125,7 @@ impl Canvas {
             let frames = self.spotlight.is_some()
                 || matches!(
                     state.tool,
-                    ToolKind::Pen | ToolKind::Rectangle | ToolKind::Ellipse
+                    ToolKind::Pen | ToolKind::Rectangle | ToolKind::Ellipse | ToolKind::Pixelate
                 );
             self.snap_hint = frames.then(|| map.box_at(at)).flatten();
             let s = map.snap(at, MAGNET_RADIUS);
@@ -1231,7 +1248,9 @@ impl Canvas {
     /// Whether the screen under the ink is needed before this pointer event:
     /// call `set_screen` first.
     pub fn needs_screen(&self, state: &ToolState, mods: Mods) -> bool {
-        !self.asleep && self.snap.is_none() && self.magnet_on(state, mods)
+        !self.asleep
+            && self.snap.is_none()
+            && (self.magnet_on(state, mods) || state.tool == ToolKind::Pixelate)
     }
 
     /// Ctrl with a shape tool, or with the spotlight on (to light a box).
@@ -1248,8 +1267,13 @@ impl Canvas {
     }
 
     /// The screen under the ink for the magnet, or None when it can't be captured.
-    pub fn set_screen(&mut self, image: Option<&Pixmap>) {
-        self.snap = Some(image.map_or_else(SnapMap::default, |i| self.edges(i)));
+    pub fn set_screen(&mut self, image: Option<Pixmap>) {
+        self.snap = Some(
+            image
+                .as_ref()
+                .map_or_else(SnapMap::default, |i| self.edges(i)),
+        );
+        self.screen = image.filter(|i| i.width() == self.width && i.height() == self.height);
     }
 
     /// The screen may have changed (drawing turned on, back from mouse mode): the
@@ -1258,6 +1282,7 @@ impl Canvas {
         if self.backdrop.is_none() {
             self.snap = None;
         }
+        self.screen = None;
         self.snap_hint = None;
         self.guides.clear();
     }
@@ -1293,6 +1318,10 @@ impl Canvas {
                 Geometry::Ellipse {
                     rect: Rect::new(c.x - w / 2.0, c.y - h / 2.0, w, h),
                 }
+            }
+            ToolKind::Pixelate => {
+                let screen = self.backdrop.as_ref().or(self.screen.as_ref());
+                pixelate(b, screen, self.scale, self.order == ChannelOrder::Bgra)
             }
             _ => return Repaint::None,
         };
@@ -1987,7 +2016,7 @@ mod tests {
         };
         assert!(!c.needs_screen(&state, Mods::default()));
         assert!(c.needs_screen(&state, CTRL));
-        c.set_screen(Some(&panel_screen()));
+        c.set_screen(Some(panel_screen()));
         assert!(!c.needs_screen(&state, CTRL));
 
         drag(&mut c, &state, &line((86., 66.), (314., 234.), CTRL));
@@ -2007,7 +2036,7 @@ mod tests {
     fn magnet_click_frames_the_box_under_the_pointer() {
         let mut c = canvas();
         let mut state = ToolState::default();
-        c.set_screen(Some(&panel_screen()));
+        c.set_screen(Some(panel_screen()));
         // Hovering shows the box first.
         c.hover(&state, with(CTRL, 200., 150.));
         assert_eq!(c.snap_hint, Some(Rect::new(40.0, 30.0, 120.0, 90.0)));
@@ -2035,7 +2064,7 @@ mod tests {
         let state = ToolState::default();
         c.set_spotlight(true);
         assert!(c.needs_screen(&state, CTRL));
-        c.set_screen(Some(&panel_screen()));
+        c.set_screen(Some(panel_screen()));
         let mut target = Pixmap::new(400, 300).unwrap();
         drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
         assert!(c.doc.annotations().is_empty(), "nothing drawn");
@@ -2074,6 +2103,37 @@ mod tests {
         c.doc.remove_all();
         drag(&mut c, &state, &circle);
         assert_eq!(kinds(&c), [AnnotationKind::Stroke]);
+    }
+
+    #[test]
+    fn pixelate_hides_the_screen_under_a_drag() {
+        let mut c = canvas();
+        let state = ToolState {
+            tool: ToolKind::Pixelate,
+            ..ToolState::default()
+        };
+        assert!(c.needs_screen(&state, Mods::default()));
+        c.set_screen(Some(panel_screen()));
+        // Across the panel's left side: dark blocks inside, light outside.
+        drag(
+            &mut c,
+            &state,
+            &line((20., 100.), (200., 160.), Mods::default()),
+        );
+        let [a] = c.doc.annotations() else { panic!() };
+        let Geometry::Pixelate { cols, colors, .. } = &a.geometry else {
+            panic!("{:?}", a.geometry)
+        };
+        assert!(
+            colors[0][0] > 200 && colors[*cols as usize - 1][0] < 100,
+            "{colors:?}"
+        );
+
+        // Ctrl+click hides the whole panel.
+        c.doc.remove_all();
+        drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
+        let [a] = c.doc.annotations() else { panic!() };
+        assert_eq!(bounds(a), Some(Rect::new(40.0, 30.0, 120.0, 90.0)));
     }
 
     #[test]
