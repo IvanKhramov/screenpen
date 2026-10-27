@@ -677,6 +677,8 @@ fn show(app: &mut App) {
 fn reshow(app: &mut App) {
     for o in &mut app.overlays {
         set_click_through(o.hwnd, app.ghost);
+        // The screen behind may have changed while hidden.
+        o.canvas.forget_screen();
         if !o.canvas.wake() {
             log("out of memory waking an overlay");
         }
@@ -755,6 +757,8 @@ fn set_ghost(app: &mut App, ghost: bool) {
     app.pressed = None;
     for o in &mut app.overlays {
         o.canvas.cancel();
+        // Back from mouse mode the screen behind is likely different.
+        o.canvas.forget_screen();
         set_click_through(o.hwnd, ghost);
     }
     refresh_all(app);
@@ -882,6 +886,19 @@ fn restore_capture_visibility(app: &mut App) {
     }
     let hide = app.hide_palette_from_capture;
     set_capture_hiding(app, hide);
+}
+
+/// Captures the screen behind an overlay when the magnet needs its edges.
+fn feed_magnet(app: &mut App, index: usize, mods: Mods) {
+    if !app.overlays[index].canvas.needs_screen(&app.state, mods) {
+        return;
+    }
+    let image = capture::screen(app.overlays[index].monitor, &own_windows(app));
+    restore_capture_visibility(app);
+    if image.is_none() {
+        log("magnet: no screen capture");
+    }
+    app.overlays[index].canvas.set_screen(image.as_ref());
 }
 
 fn toggle_freeze(app: &mut App) {
@@ -1669,6 +1686,7 @@ fn on_pointer(
         mods: Mods { ctrl, alt, shift },
         double_click: false,
     };
+    feed_magnet(app, index, pointer.mods);
     let repaint = match msg {
         WM_POINTERDOWN if app.pressed.is_none() => {
             // The pen's eraser end erases like the right mouse button.

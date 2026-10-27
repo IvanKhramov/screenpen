@@ -556,8 +556,8 @@ impl SettingsApp {
             ui.label(
                 RichText::new(tr(
                     lang,
-                    "The right mouse button erases. Ctrl+Z undoes.",
-                    "Правая кнопка мыши стирает. Ctrl+Z отменяет.",
+                    "The right mouse button erases. Ctrl+Z undoes. Ctrl+click on a window or a panel frames it.",
+                    "Правая кнопка мыши стирает. Ctrl+Z отменяет. Ctrl+клик по окну или панели обводит её рамкой.",
                 ))
                 .weak(),
             );

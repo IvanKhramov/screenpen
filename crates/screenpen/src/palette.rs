@@ -1614,7 +1614,7 @@ pub fn render_cheat_sheet(
         .max(third);
     let w = pad * 2.0 + col_w * 3.0 + col_gap * 2.0;
     let note_y = head_h + body_h + 14.0;
-    let h = note_y + 22.0 + pad;
+    let h = note_y + 2.0 * 22.0 + pad;
     let mut pixmap = Pixmap::new((w * scale).ceil() as u32, (h * scale).ceil() as u32)?;
     let t = Transform::from_scale(scale, scale);
     let mut target = pixmap.as_mut();
@@ -1717,6 +1717,13 @@ pub fn render_cheat_sheet(
     fill(
         &mut target,
         text::path(lang.t(T::WithPen), 12.5, Point::new(pad, note_y)),
+        ACCENT,
+        t,
+        order,
+    );
+    fill(
+        &mut target,
+        text::path(lang.t(T::Magnet), 12.5, Point::new(pad, note_y + 22.0)),
         ACCENT,
         t,
         order,

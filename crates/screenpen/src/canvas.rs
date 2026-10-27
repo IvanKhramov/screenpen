@@ -9,10 +9,12 @@
 //! returns what to repaint, and `paint` updates only that part of the target.
 
 use std::collections::HashSet;
+use std::f32::consts::SQRT_2;
 
 use screenpen_core::annotation::{AnnotationId, now};
 use screenpen_core::render::{ChannelOrder, bounds, draw, hit_test, segment_outline, skia_color};
 use screenpen_core::shortcuts::next_text_size;
+use screenpen_core::snap::{Edge, SnapMap, Snapped};
 use screenpen_core::text_edit::{Motion, TextBuffer};
 use screenpen_core::tools::shape_geometry;
 use screenpen_core::{
@@ -113,7 +115,10 @@ enum Gesture {
     },
     Shape {
         tool: ToolKind,
+        /// Where the shape starts: `pressed`, or the edges the magnet moved it to.
         start: Point,
+        pressed: Point,
+        start_edges: (Option<Edge>, Option<Edge>),
         preview: Option<Annotation>,
     },
     Erase {
@@ -180,6 +185,45 @@ pub fn typing_action(
 /// Auto-fade: how long the fade-out itself takes.
 const FADE_DURATION: f64 = 0.4;
 const ACCENT: Rgba = Rgba::rgb(0.04, 0.52, 1.0);
+/// The magnet's guides: cyan, unlike any ink color.
+const GUIDE: Rgba = Rgba::rgb(0.0, 0.85, 0.9);
+/// How far the magnet reaches for an edge, in points.
+const MAGNET_RADIUS: f32 = 10.0;
+/// How much of an edge a guide shows each side of the pointer, in points.
+const GUIDE_REACH: f32 = 120.0;
+
+/// Ctrl turns the magnet on for shapes, the pen's Ctrl shapes included.
+fn magnet(state: &ToolState, mods: Mods) -> bool {
+    mods.ctrl
+        && matches!(
+            state.tool,
+            ToolKind::Pen
+                | ToolKind::Line
+                | ToolKind::Arrow
+                | ToolKind::Rectangle
+                | ToolKind::Ellipse
+        )
+}
+
+/// The parts of `edges` (vertical, horizontal) near `p`.
+fn guide_lines(p: Point, (x, y): (Option<Edge>, Option<Edge>)) -> Vec<(Point, Point)> {
+    let near = |e: Edge, along: f32| {
+        (
+            e.from.max(along - GUIDE_REACH),
+            e.to.min(along + GUIDE_REACH),
+        )
+    };
+    let mut lines = Vec::new();
+    if let Some(e) = x {
+        let (a, b) = near(e, p.y);
+        lines.push((Point::new(e.pos, a), Point::new(e.pos, b)));
+    }
+    if let Some(e) = y {
+        let (a, b) = near(e, p.x);
+        lines.push((Point::new(a, e.pos), Point::new(b, e.pos)));
+    }
+    lines
+}
 
 pub struct Canvas {
     pub doc: Document,
@@ -211,6 +255,12 @@ pub struct Canvas {
     backdrop: Option<Pixmap>,
     /// Center (None until the pointer is seen) and radius, while the spotlight is on.
     spotlight: Option<(Option<Point>, f32)>,
+    /// Edges of the screen under the ink, for the magnet; None until first needed.
+    snap: Option<SnapMap>,
+    /// The box a Ctrl+click would frame, under the pointer.
+    snap_hint: Option<Rect>,
+    /// Pieces of the edges the magnet holds the pointer to.
+    guides: Vec<(Point, Point)>,
 }
 
 impl Canvas {
@@ -237,6 +287,9 @@ impl Canvas {
             laser: Laser::default(),
             backdrop: None,
             spotlight: None,
+            snap: None,
+            snap_hint: None,
+            guides: Vec::new(),
         })
     }
 
@@ -506,6 +559,12 @@ impl Canvas {
             Gesture::Marquee { rect, .. } => add(*rect),
             _ => {}
         }
+        if let Some(b) = self.snap_hint {
+            add(b);
+        }
+        for (a, b) in &self.guides {
+            add(Rect::from_points(*a, *b));
+        }
         for b in self.selection_boxes() {
             add(b);
         }
@@ -592,6 +651,32 @@ impl Canvas {
                 target.stroke_path(&path, &accent, &dashed, t, None);
             }
         }
+        if let Some(path) = self
+            .snap_hint
+            .and_then(|b| b.to_skia())
+            .map(PathBuilder::from_rect)
+        {
+            let mut fill = accent.clone();
+            fill.set_color(skia_color(ACCENT.with_alpha(0.1), self.order));
+            target.fill_path(&path, &fill, FillRule::Winding, t, None);
+            target.stroke_path(&path, &accent, &dashed, t, None);
+        }
+        if !self.guides.is_empty() {
+            let mut pb = PathBuilder::new();
+            for (a, b) in &self.guides {
+                pb.move_to(a.x, a.y);
+                pb.line_to(b.x, b.y);
+            }
+            if let Some(path) = pb.finish() {
+                let mut guide = accent.clone();
+                guide.set_color(skia_color(GUIDE, self.order));
+                let stroke = Stroke {
+                    width: 1.5,
+                    ..Stroke::default()
+                };
+                target.stroke_path(&path, &guide, &stroke, t, None);
+            }
+        }
         if let Gesture::Marquee { rect, .. } = &self.gesture
             && let Some(path) = rect.to_skia().map(PathBuilder::from_rect)
         {
@@ -644,6 +729,7 @@ impl Canvas {
     /// Holds `image` (or nothing) under the ink. It must match the canvas size.
     pub fn set_backdrop(&mut self, image: Option<Pixmap>) -> Repaint {
         self.backdrop = image.filter(|i| i.width() == self.width() && i.height() == self.height());
+        self.snap = self.backdrop.as_ref().map(|i| self.edges(i));
         self.rebuild_cache();
         Repaint::Full
     }
@@ -758,6 +844,8 @@ impl Canvas {
 
     pub fn pointer_down(&mut self, state: &ToolState, p: Pointer, button: Button) -> Repaint {
         let at = self.to_points(&p);
+        self.snap_hint = None;
+        self.guides.clear();
         if button == Button::Right {
             // Hold the right button to erase with any tool.
             return self.begin_erase(state, at);
@@ -782,12 +870,14 @@ impl Canvas {
             }
         }
         match state.tool {
-            ToolKind::Pen if p.mods.ctrl && p.mods.alt => self.begin_shape(ToolKind::Ellipse, at),
-            ToolKind::Pen if p.mods.ctrl => self.begin_shape(ToolKind::Rectangle, at),
-            ToolKind::Pen if p.mods.alt => self.begin_shape(ToolKind::Arrow, at),
+            ToolKind::Pen if p.mods.ctrl && p.mods.alt => {
+                self.begin_shape(ToolKind::Ellipse, at, true)
+            }
+            ToolKind::Pen if p.mods.ctrl => self.begin_shape(ToolKind::Rectangle, at, true),
+            ToolKind::Pen if p.mods.alt => self.begin_shape(ToolKind::Arrow, at, false),
             ToolKind::Pen | ToolKind::Highlighter => self.begin_freehand(state, state.tool, &p, at),
             tool @ (ToolKind::Line | ToolKind::Arrow | ToolKind::Rectangle | ToolKind::Ellipse) => {
-                self.begin_shape(tool, at)
+                self.begin_shape(tool, at, p.mods.ctrl)
             }
             ToolKind::Badge => {
                 let a = Annotation::new(
@@ -818,6 +908,11 @@ impl Canvas {
 
     pub fn pointer_move(&mut self, state: &ToolState, p: Pointer) -> Repaint {
         let at = self.to_points(&p);
+        // Shift's angles and squares win over the magnet.
+        let end = match self.gesture {
+            Gesture::Shape { .. } => self.snapped(at, magnet(state, p.mods) && !p.mods.shift),
+            _ => Snapped::free(at),
+        };
         if let Some((center, _)) = &mut self.spotlight {
             *center = Some(at);
         }
@@ -863,8 +958,21 @@ impl Canvas {
             Gesture::Shape {
                 tool,
                 start,
+                pressed,
+                start_edges,
                 preview,
             } => {
+                // A click stays a click even when the magnet moves both ends apart.
+                if pressed.distance(at) < 3.0 {
+                    *preview = None;
+                    self.guides.clear();
+                    return Repaint::None;
+                }
+                self.guides = guide_lines(*start, *start_edges)
+                    .into_iter()
+                    .chain(guide_lines(end.point, (end.x, end.y)))
+                    .collect();
+                let at = end.point;
                 let constrain = p.mods.shift;
                 let curved =
                     *tool == ToolKind::Arrow && p.mods.alt && state.tool == ToolKind::Arrow;
@@ -929,6 +1037,20 @@ impl Canvas {
         } else {
             self.eraser_at = None;
         }
+        self.snap_hint = None;
+        self.guides.clear();
+        if matches!(self.gesture, Gesture::Idle)
+            && magnet(state, p.mods)
+            && let Some(map) = &self.snap
+        {
+            let frames = matches!(
+                state.tool,
+                ToolKind::Pen | ToolKind::Rectangle | ToolKind::Ellipse
+            );
+            self.snap_hint = frames.then(|| map.box_at(at)).flatten();
+            let s = map.snap(at, MAGNET_RADIUS);
+            self.guides = guide_lines(s.point, (s.x, s.y));
+        }
         // Overlays repaint themselves in `paint`.
         Repaint::None
     }
@@ -958,10 +1080,19 @@ impl Canvas {
                 repaint
                     .union(self.commit(Annotation::new(Geometry::Stroke { points, widths }, style)))
             }
-            Gesture::Shape { preview, .. } => match preview {
-                Some(a) => self.commit(a),
-                None => Repaint::None,
-            },
+            Gesture::Shape {
+                tool,
+                pressed,
+                preview,
+                ..
+            } => {
+                self.guides.clear();
+                match preview {
+                    Some(a) => self.commit(a),
+                    None if magnet(state, p.mods) => self.frame_box(state, tool, pressed),
+                    None => Repaint::None,
+                }
+            }
             Gesture::Erase { ids, .. } => {
                 self.eraser_at =
                     (state.tool == ToolKind::Eraser).then_some((at, state.eraser_radius()));
@@ -1018,13 +1149,76 @@ impl Canvas {
         self.draw_live(dot)
     }
 
-    fn begin_shape(&mut self, tool: ToolKind, at: Point) -> Repaint {
+    fn begin_shape(&mut self, tool: ToolKind, at: Point, magnet: bool) -> Repaint {
+        let start = self.snapped(at, magnet);
         self.gesture = Gesture::Shape {
             tool,
-            start: at,
+            start: start.point,
+            pressed: at,
+            start_edges: (start.x, start.y),
             preview: None,
         };
         Repaint::None
+    }
+
+    // MARK: magnet
+
+    /// Whether the screen under the ink is needed before this pointer event:
+    /// call `set_screen` first.
+    pub fn needs_screen(&self, state: &ToolState, mods: Mods) -> bool {
+        !self.asleep && self.snap.is_none() && magnet(state, mods)
+    }
+
+    /// The screen under the ink for the magnet, or None when it can't be captured.
+    pub fn set_screen(&mut self, image: Option<&Pixmap>) {
+        self.snap = Some(image.map_or_else(SnapMap::default, |i| self.edges(i)));
+    }
+
+    /// The screen may have changed (drawing turned on, back from mouse mode): the
+    /// magnet captures it again when next used. A frozen screen stays.
+    pub fn forget_screen(&mut self) {
+        if self.backdrop.is_none() {
+            self.snap = None;
+        }
+        self.snap_hint = None;
+        self.guides.clear();
+    }
+
+    fn edges(&self, image: &Pixmap) -> SnapMap {
+        SnapMap::detect(image.data(), image.width(), image.height(), self.scale)
+    }
+
+    fn snapped(&self, at: Point, magnet: bool) -> Snapped {
+        match &self.snap {
+            Some(map) if magnet => map.snap(at, MAGNET_RADIUS),
+            _ => Snapped::free(at),
+        }
+    }
+
+    /// Ctrl+click with a rectangle or an ellipse frames the box under the pointer.
+    fn frame_box(&mut self, state: &ToolState, tool: ToolKind, at: Point) -> Repaint {
+        let style = state.style(tool);
+        let Some(b) = self.snap.as_ref().and_then(|m| m.box_at(at)) else {
+            return Repaint::None;
+        };
+        // Just outside the box, so the ink doesn't cover what it points at.
+        let r = b.inset(-(style.width / 2.0 + 2.0));
+        let geometry = match tool {
+            ToolKind::Rectangle => Geometry::Rectangle {
+                rect: r,
+                corner_radius: 6.0,
+            },
+            ToolKind::Ellipse => {
+                // Through the box's corners.
+                let (w, h) = (r.width * SQRT_2, r.height * SQRT_2);
+                let c = r.center();
+                Geometry::Ellipse {
+                    rect: Rect::new(c.x - w / 2.0, c.y - h / 2.0, w, h),
+                }
+            }
+            _ => return Repaint::None,
+        };
+        self.commit(Annotation::new(geometry, style))
     }
 
     fn begin_erase(&mut self, state: &ToolState, at: Point) -> Repaint {
@@ -1417,6 +1611,8 @@ impl Canvas {
         let had_gesture = !matches!(self.gesture, Gesture::Idle);
         self.gesture = Gesture::Idle;
         self.eraser_at = None;
+        self.snap_hint = None;
+        self.guides.clear();
         self.laser = Laser::default();
         let live = self.live_bounds.map_or(Repaint::None, Repaint::Rect);
         self.clear_live();
@@ -1675,6 +1871,93 @@ mod tests {
 
     fn opaque(p: &Pixmap, x: u32, y: u32) -> bool {
         p.pixel(x, y).is_some_and(|px| px.alpha() > 200)
+    }
+
+    /// A light screen with a dark panel at (40, 30)-(160, 120) points, at scale 2.
+    fn panel_screen() -> Pixmap {
+        let mut screen = Pixmap::new(400, 300).unwrap();
+        screen.fill(tiny_skia::Color::from_rgba8(235, 235, 235, 255));
+        let r = tiny_skia::Rect::from_xywh(80.0, 60.0, 240.0, 180.0).unwrap();
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(60, 60, 60, 255);
+        screen.fill_rect(r, &paint, Transform::identity(), None);
+        screen
+    }
+
+    fn only_rect(c: &Canvas) -> Rect {
+        match c.doc.annotations() {
+            [a] => match a.geometry {
+                Geometry::Rectangle { rect, .. } => rect,
+                ref g => panic!("{g:?}"),
+            },
+            other => panic!("{} annotations", other.len()),
+        }
+    }
+
+    const CTRL: Mods = Mods {
+        ctrl: true,
+        alt: false,
+        shift: false,
+    };
+
+    #[test]
+    fn magnet_snaps_a_rectangle_to_a_panel() {
+        let mut c = canvas();
+        let state = ToolState {
+            tool: ToolKind::Rectangle,
+            ..ToolState::default()
+        };
+        assert!(!c.needs_screen(&state, Mods::default()));
+        assert!(c.needs_screen(&state, CTRL));
+        c.set_screen(Some(&panel_screen()));
+        assert!(!c.needs_screen(&state, CTRL));
+
+        drag(&mut c, &state, &line((86., 66.), (314., 234.), CTRL));
+        assert_eq!(only_rect(&c), Rect::new(40.0, 30.0, 120.0, 90.0));
+
+        // Without Ctrl the rectangle is where the pointer was.
+        c.doc.remove_all();
+        drag(&mut c, &state, &line((86., 66.), (314., 234.), Mods::default()));
+        assert_eq!(only_rect(&c), Rect::new(43.0, 33.0, 114.0, 84.0));
+    }
+
+    #[test]
+    fn magnet_click_frames_the_box_under_the_pointer() {
+        let mut c = canvas();
+        let mut state = ToolState::default();
+        c.set_screen(Some(&panel_screen()));
+        // Hovering shows the box first.
+        c.hover(&state, with(CTRL, 200., 150.));
+        assert_eq!(c.snap_hint, Some(Rect::new(40.0, 30.0, 120.0, 90.0)));
+        c.hover(&state, at(200., 150.));
+        assert_eq!(c.snap_hint, None);
+
+        // The pen's Ctrl rectangle frames it just outside.
+        drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
+        let pad = state.style(ToolKind::Rectangle).width / 2.0 + 2.0;
+        assert_eq!(
+            only_rect(&c),
+            Rect::new(40.0, 30.0, 120.0, 90.0).inset(-pad)
+        );
+
+        // Nothing to frame outside the panel.
+        c.doc.remove_all();
+        state.tool = ToolKind::Rectangle;
+        drag(&mut c, &state, &[with(CTRL, 20., 20.)]);
+        assert!(c.doc.annotations().is_empty());
+    }
+
+    #[test]
+    fn freeze_feeds_the_magnet() {
+        let mut c = canvas();
+        let state = ToolState::default();
+        c.set_backdrop(Some(panel_screen()));
+        assert!(!c.needs_screen(&state, CTRL));
+        // A frozen screen doesn't change, so its edges stay.
+        c.forget_screen();
+        assert!(!c.needs_screen(&state, CTRL));
+        c.set_backdrop(None);
+        assert!(c.needs_screen(&state, CTRL));
     }
 
     #[test]

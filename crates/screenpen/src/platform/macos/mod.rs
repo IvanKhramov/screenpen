@@ -38,7 +38,7 @@ use screenpen_core::render::ChannelOrder;
 use screenpen_core::{Action, Key, Rgba, ToolKind};
 use tiny_skia::Pixmap;
 
-use crate::canvas::{Button, Canvas, Pointer, Repaint, Request, typing_action};
+use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request, typing_action};
 use crate::config::{PaletteSettings, Settings};
 use crate::i18n::{Lang, T};
 use crate::palette::{
@@ -657,6 +657,8 @@ fn show(app: &mut App) {
     app.ghost = false;
     for o in &mut app.overlays {
         o.panel.setIgnoresMouseEvents(false);
+        // The screen behind may have changed while hidden.
+        o.canvas.forget_screen();
         if !o.canvas.wake() {
             log("out of memory waking an overlay");
         }
@@ -702,6 +704,8 @@ fn set_ghost(app: &mut App, ghost: bool) {
     app.pressed = None;
     for o in &mut app.overlays {
         o.canvas.cancel();
+        // Back from mouse mode the screen behind is likely different.
+        o.canvas.forget_screen();
         o.panel.setIgnoresMouseEvents(ghost);
     }
     refresh_all(app);
@@ -848,6 +852,19 @@ fn update_magnifier(app: &mut App) {
     let lens = app.lens.get_or_insert_with(|| ui::Popup::new(mtm, true));
     let r = LENS_RADIUS as f64;
     lens.show(lens_image, scale, (at.0 - r, at.1 - r));
+}
+
+/// Captures the screen under an overlay when the magnet needs its edges.
+fn feed_magnet(app: &mut App, index: usize, mods: Mods) {
+    let o = &mut app.overlays[index];
+    if !o.canvas.needs_screen(&app.state, mods) {
+        return;
+    }
+    let size = (o.canvas.width(), o.canvas.height());
+    let image = capture::screen(o.frame, o.panel.windowNumber(), size)
+        .map_err(|e| log(&format!("magnet: no capture: {e}")))
+        .ok();
+    o.canvas.set_screen(image.as_ref());
 }
 
 fn toggle_freeze(app: &mut App) {
@@ -1347,6 +1364,7 @@ fn on_pointer(app: &mut App, index: usize, input: Input, event: &NSEvent) {
         }
         set_cursor(app, index);
     }
+    feed_magnet(app, index, keys::mods(event));
     let o = &app.overlays[index];
     let at = o.view.convertPoint_fromView(event.locationInWindow(), None);
     let scale = o.canvas.scale() as f64;

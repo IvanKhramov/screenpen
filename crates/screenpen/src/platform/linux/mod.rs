@@ -594,6 +594,8 @@ fn show(app: &mut App) {
     app.ghost = false;
     app.display.set_click_through(false);
     for o in &mut app.overlays {
+        // The screen behind may have changed while hidden.
+        o.canvas.forget_screen();
         if !o.canvas.wake() {
             log("out of memory waking an overlay");
         }
@@ -633,6 +635,8 @@ fn set_ghost(app: &mut App, ghost: bool) {
     app.pressed = None;
     for o in &mut app.overlays {
         o.canvas.cancel();
+        // Back from mouse mode the screen behind is likely different.
+        o.canvas.forget_screen();
     }
     app.display.set_click_through(ghost);
     refresh_all(app);
@@ -688,6 +692,18 @@ fn tick(app: &mut App) {
         }
     }
     update_tick(app);
+}
+
+/// Captures the screen under an overlay when the magnet needs its edges. On X11 the
+/// overlays blink once for it; Wayland has no capture, so only a frozen screen works.
+fn feed_magnet(app: &mut App, index: usize, mods: Mods) {
+    if !app.overlays[index].canvas.needs_screen(&app.state, mods) {
+        return;
+    }
+    let area = app.overlays[index].monitor.area;
+    let image = app.display.capture(&[area]).pop().flatten();
+    app.overlays[index].canvas.set_screen(image.as_ref());
+    refresh_all(app);
 }
 
 fn toggle_freeze(app: &mut App) {
@@ -1090,6 +1106,7 @@ fn on_pointer(app: &mut App, index: usize, kind: PointerKind, at: (i32, i32), mo
     if app.ghost || !app.active {
         return;
     }
+    feed_magnet(app, index, mods);
     let area = app.overlays[index].monitor.area;
     let mut pointer = Pointer {
         x: (at.0 - area.x) as f32,

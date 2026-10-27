@@ -44,6 +44,7 @@ pub enum T {
     CheatSheet,
     CheatSheetClose,
     WithPen,
+    Magnet,
     Grip,
     NoShortcut,
 }
@@ -126,6 +127,12 @@ impl Lang {
             }
             (Ru, WithPen) => {
                 "Пером: Ctrl прямоугольник, Ctrl+Alt эллипс, Alt стрелка, Shift ровно/квадрат. Правая кнопка стирает."
+            }
+            (En, Magnet) => {
+                "Magnet: hold Ctrl and shapes stick to windows and panels. Ctrl+click frames the one under the pointer."
+            }
+            (Ru, Magnet) => {
+                "Магнит: с Ctrl фигуры липнут к краям окон и панелей. Ctrl+клик обводит блок под курсором."
             }
             (En, Grip) => "Drag to move. Double-click to rotate",
             (Ru, Grip) => "Перетащите, чтобы подвинуть. Двойной клик поворачивает",

@@ -10,6 +10,7 @@ pub mod pdf;
 pub mod pressure;
 pub mod render;
 pub mod shortcuts;
+pub mod snap;
 pub mod stroke;
 pub mod style;
 pub mod text;

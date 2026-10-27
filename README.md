@@ -95,6 +95,13 @@ existing text with the select tool to edit it.
 With the pen: hold Ctrl for a rectangle, Ctrl+Alt for an ellipse, Alt for an arrow. Shift makes
 lines snap to 45° and shapes square. Alt with the arrow tool bends the arrow. Hold the right mouse
 button (or use a pen's eraser end) to erase with any tool. Pen pressure changes the width.
+
+Magnet: with Ctrl held, rectangles, ellipses, lines and arrows stick to the edges of windows,
+panels and buttons on the screen, and pink guides show the edge. Ctrl+click without dragging
+frames the box under the pointer; a dashed outline shows it before you click. The magnet looks at
+a capture of the screen: on macOS it needs the Screen Recording permission, on X11 the drawing
+blinks once when it takes it, and native Wayland overlays (KDE, Sway, Hyprland) have no capture,
+so there is no magnet there.
 Keys are physical: P is the pen on any keyboard layout. Every shortcut can be changed or turned
 off in Settings → Shortcuts.
 
