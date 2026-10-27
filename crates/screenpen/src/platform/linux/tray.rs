@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::{CheckmarkItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{Icon, MenuItem, ToolTip};
-use tiny_skia::{Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::Color;
 
 use super::{Msg, log};
 use crate::i18n::{Lang, T};
@@ -278,34 +278,18 @@ pub fn notify(title: &str, text: &str) {
     });
 }
 
-/// A round badge in the mode's color with a pen stroke across it, as SNI wants it:
-/// straight (not premultiplied) ARGB, big-endian.
+/// The tray icon is the app icon; a dot tells drawing (red) and mouse mode (purple).
+fn dot(mode: Mode) -> Option<Color> {
+    match mode {
+        Mode::Idle => None,
+        Mode::Drawing => Some(Color::from_rgba8(0xff, 0x3b, 0x30, 255)),
+        Mode::Ghost => Some(Color::from_rgba8(0xaf, 0x52, 0xde, 255)),
+    }
+}
+
+/// The icon as SNI wants it: straight (not premultiplied) ARGB, big-endian.
 fn icon(mode: Mode, size: u32) -> Option<Icon> {
-    let mut pixmap = Pixmap::new(size, size)?;
-    let s = size as f32 / 32.0;
-    let t = Transform::from_scale(s, s);
-    let (r, g, b) = match mode {
-        Mode::Idle => (0xff, 0xcc, 0x00),
-        Mode::Drawing => (0xff, 0x3b, 0x30),
-        Mode::Ghost => (0xaf, 0x52, 0xde),
-    };
-    let mut paint = Paint {
-        anti_alias: true,
-        ..Paint::default()
-    };
-    paint.set_color(Color::from_rgba8(r, g, b, 255));
-    let circle = PathBuilder::from_circle(16.0, 16.0, 15.0)?;
-    pixmap.fill_path(&circle, &paint, FillRule::Winding, t, None);
-    let mut pb = PathBuilder::new();
-    pb.move_to(9.0, 23.0);
-    pb.line_to(23.0, 9.0);
-    paint.set_color(Color::from_rgba8(0x1c, 0x1c, 0x1e, 255));
-    let stroke = Stroke {
-        width: 4.5,
-        line_cap: LineCap::Round,
-        ..Stroke::default()
-    };
-    pixmap.stroke_path(&pb.finish()?, &paint, &stroke, t, None);
+    let pixmap = screenpen_core::icon::with_dot(size, dot(mode))?;
     let data = pixmap
         .pixels()
         .iter()

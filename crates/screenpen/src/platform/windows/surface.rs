@@ -7,7 +7,7 @@
 use std::ffi::c_void;
 use std::ptr::null_mut;
 
-use tiny_skia::{Color, PixmapMut};
+use tiny_skia::PixmapMut;
 use windows_sys::Win32::Foundation::{HWND, POINT, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
@@ -132,9 +132,4 @@ impl Drop for Surface {
             DeleteDC(self.dc);
         }
     }
-}
-
-/// An RGBA color with red and blue swapped, for painting into the BGRA DIB.
-pub fn bgra(r: u8, g: u8, b: u8, a: u8) -> Color {
-    Color::from_rgba8(b, g, r, a)
 }

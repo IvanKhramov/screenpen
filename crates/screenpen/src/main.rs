@@ -58,6 +58,10 @@ fn main() {
         }
         return;
     }
+    if std::env::args().any(|a| a == "--quit") {
+        platform::quit_running();
+        return;
+    }
     if std::env::args().any(|a| a == "--toggle") {
         platform::toggle();
         return;

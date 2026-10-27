@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use super::log;
 
 /// The desktop entry shipped next to the binary; autostart runs it with the full path.
-pub const DESKTOP_ENTRY: &str = include_str!("screenpen.desktop");
+pub const DESKTOP_ENTRY: &str = include_str!("../../../../../packaging/linux/screenpen.desktop");
 
 fn entry_path() -> Option<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")

@@ -272,6 +272,10 @@ fn chord_text(app: &App, action: Action) -> String {
 
 // MARK: settings
 
+pub fn quit_running() -> bool {
+    instance::quit_running()
+}
+
 pub fn system_lang() -> Lang {
     // Primary language id 0x19 is Russian.
     if unsafe { GetUserDefaultUILanguage() } & 0x3ff == 0x19 {

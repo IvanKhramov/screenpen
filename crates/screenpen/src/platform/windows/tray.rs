@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 
-use tiny_skia::{FillRule, Paint, PathBuilder, PixmapMut, Stroke, Transform};
+use tiny_skia::PixmapMut;
 use windows_sys::Win32::Foundation::{HWND, POINT};
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
@@ -21,7 +21,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_NULL,
 };
 
-use super::surface::bgra;
 use crate::i18n::{Lang, T};
 use crate::state::{DIM_LEVELS, FADE_SECONDS};
 
@@ -254,7 +253,7 @@ fn copy<const N: usize>(dst: &mut [u16; N], s: &str) {
     }
 }
 
-/// A round badge in the mode's color with a pen stroke across it, drawn at 32x32;
+/// The app icon, with a dot for drawing and mouse mode, drawn at 32x32;
 /// the shell scales it down for the tray.
 fn make_icon(mode: Mode) -> HICON {
     const SIZE: u32 = 32;
@@ -295,35 +294,23 @@ fn make_icon(mode: Mode) -> HICON {
 }
 
 fn draw_icon(pixmap: &mut PixmapMut, mode: Mode) {
-    let (r, g, b) = match mode {
-        Mode::Idle => (0xff, 0xcc, 0x00),
-        Mode::Drawing => (0xff, 0x3b, 0x30),
-        Mode::Ghost => (0xaf, 0x52, 0xde),
+    let dot = match mode {
+        Mode::Idle => None,
+        Mode::Drawing => Some(tiny_skia::Color::from_rgba8(0xff, 0x3b, 0x30, 255)),
+        Mode::Ghost => Some(tiny_skia::Color::from_rgba8(0xaf, 0x52, 0xde, 255)),
     };
-    let mut paint = Paint {
-        anti_alias: true,
-        ..Paint::default()
+    let Some(icon) = screenpen_core::icon::with_dot(pixmap.width(), dot) else {
+        return;
     };
-    paint.set_color(bgra(r, g, b, 255));
-    if let Some(circle) = PathBuilder::from_circle(16.0, 16.0, 15.0) {
-        pixmap.fill_path(
-            &circle,
-            &paint,
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-    }
-    let mut pb = PathBuilder::new();
-    pb.move_to(9.0, 23.0);
-    pb.line_to(23.0, 9.0);
-    if let Some(line) = pb.finish() {
-        paint.set_color(bgra(0x1c, 0x1c, 0x1e, 255));
-        let stroke = Stroke {
-            width: 4.5,
-            line_cap: tiny_skia::LineCap::Round,
-            ..Stroke::default()
-        };
-        pixmap.stroke_path(&line, &paint, &stroke, Transform::identity(), None);
+    // Icons take straight alpha, in B, G, R, A order.
+    for (dst, p) in pixmap
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(icon.pixels())
+    {
+        let c = p.demultiply();
+        *dst = [c.blue(), c.green(), c.red(), c.alpha()];
     }
 }

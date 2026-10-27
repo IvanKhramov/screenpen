@@ -10,7 +10,7 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{MainThreadMarker, NSString};
-use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::Color;
 
 use super::view::{Target, ns_image};
 use crate::i18n::{Lang, T};
@@ -202,34 +202,17 @@ pub fn fill_menu(mtm: MainThreadMarker, menu: &NSMenu, target: &Target, m: &Menu
     add(menu, 5, &quit, false, true);
 }
 
-/// A round badge in the mode's color with a pen stroke across it, drawn at 36x36
-/// pixels and shown at 18x18 points.
+/// The tray icon is the app icon; a dot tells drawing (red) and mouse mode (purple).
+fn dot(mode: Mode) -> Option<Color> {
+    match mode {
+        Mode::Idle => None,
+        Mode::Drawing => Some(Color::from_rgba8(0xff, 0x3b, 0x30, 255)),
+        Mode::Ghost => Some(Color::from_rgba8(0xaf, 0x52, 0xde, 255)),
+    }
+}
+
+/// The icon drawn at 36x36 pixels and shown at 18x18 points.
 fn make_icon(mode: Mode) -> Option<Retained<NSImage>> {
-    const SIZE: f32 = 36.0;
-    let mut pixmap = Pixmap::new(SIZE as u32, SIZE as u32)?;
-    let t = Transform::from_scale(SIZE / 32.0, SIZE / 32.0);
-    let (r, g, b) = match mode {
-        Mode::Idle => (0xff, 0xcc, 0x00),
-        Mode::Drawing => (0xff, 0x3b, 0x30),
-        Mode::Ghost => (0xaf, 0x52, 0xde),
-    };
-    let mut paint = Paint {
-        anti_alias: true,
-        ..Paint::default()
-    };
-    paint.set_color(Color::from_rgba8(r, g, b, 255));
-    let circle = PathBuilder::from_circle(16.0, 16.0, 15.0)?;
-    pixmap.fill_path(&circle, &paint, FillRule::Winding, t, None);
-    let mut pb = PathBuilder::new();
-    pb.move_to(9.0, 23.0);
-    pb.line_to(23.0, 9.0);
-    let line = pb.finish()?;
-    paint.set_color(Color::from_rgba8(0x1c, 0x1c, 0x1e, 255));
-    let stroke = Stroke {
-        width: 4.5,
-        line_cap: tiny_skia::LineCap::Round,
-        ..Stroke::default()
-    };
-    pixmap.stroke_path(&line, &paint, &stroke, t, None);
+    let pixmap = screenpen_core::icon::with_dot(36, dot(mode))?;
     ns_image(&pixmap, 18.0)
 }

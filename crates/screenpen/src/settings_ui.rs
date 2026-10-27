@@ -16,6 +16,19 @@ use screenpen_core::render::ChannelOrder;
 
 pub const TITLE: &str = "screenpen settings";
 
+/// The app icon for the window's title bar and the taskbar.
+fn window_icon() -> egui::IconData {
+    let Some(pixmap) = screenpen_core::icon::draw(128) else {
+        return egui::IconData::default();
+    };
+    let image = to_image(&pixmap);
+    egui::IconData {
+        rgba: image.as_raw().to_vec(),
+        width: pixmap.width(),
+        height: pixmap.height(),
+    }
+}
+
 /// Starts the settings window; `welcome` opens it on the getting-started page.
 pub fn spawn(welcome: bool) -> std::io::Result<()> {
     let mut command = std::process::Command::new(std::env::current_exe()?);
@@ -32,7 +45,8 @@ pub fn run() {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
             .with_inner_size([900.0, 700.0])
-            .with_min_inner_size([560.0, 420.0]),
+            .with_min_inner_size([560.0, 420.0])
+            .with_icon(window_icon()),
         ..Default::default()
     };
     let path = default_path();

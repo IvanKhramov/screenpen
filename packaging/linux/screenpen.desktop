@@ -3,6 +3,7 @@ Type=Application
 Name=screenpen
 Comment=Draw on top of the screen during presentations
 Exec=screenpen
+Icon=screenpen
 Terminal=false
 Categories=Utility;Presentation;
 Keywords=draw;annotate;presentation;pen;

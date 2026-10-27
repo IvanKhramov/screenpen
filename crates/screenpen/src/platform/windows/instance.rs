@@ -71,6 +71,25 @@ pub fn claim() -> Claim {
         return Claim::Exit;
     }
     log(&format!("replacing running copy {other:?}"));
+    stop(running);
+    Claim::Continue {
+        replaced: Some(other),
+    }
+}
+
+/// `screenpen --quit`: stops a running copy (the installer runs this before it
+/// replaces or removes the exe). Returns whether one was running.
+pub fn quit_running() -> bool {
+    let running = find_running();
+    if running.is_null() {
+        return false;
+    }
+    stop(running);
+    true
+}
+
+/// Asks the copy owning `running` to quit, and ends it if it doesn't.
+fn stop(running: HWND) {
     let tray = unsafe { FindWindowW(wide(TRAY_CLASS).as_ptr(), null()) };
     let mut pid = 0u32;
     unsafe {
@@ -96,8 +115,5 @@ pub fn claim() -> Claim {
             }
             CloseHandle(process);
         }
-    }
-    Claim::Continue {
-        replaced: Some(other),
     }
 }

@@ -1,7 +1,7 @@
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{notify_settings_changed, run, system_lang};
+pub use windows::{notify_settings_changed, quit_running, run, system_lang};
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -17,6 +17,12 @@ pub use linux::{notify_settings_changed, run, system_lang, toggle};
 pub fn run() {
     eprintln!("screenpen: only Windows, macOS and Linux are supported for now (see PLAN.md)");
     std::process::exit(1);
+}
+
+/// `screenpen --quit` stops a running copy; only the Windows installer needs it so far.
+#[cfg(not(windows))]
+pub fn quit_running() -> bool {
+    false
 }
 
 /// `screenpen --toggle` reaches a running copy on Linux only; elsewhere it starts screenpen.

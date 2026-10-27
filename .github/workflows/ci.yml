@@ -27,10 +27,21 @@ jobs:
         env:
           # Shown in the tray menu; a running copy of another version gets replaced.
           SCREENPEN_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+      - name: Installer
+        env:
+          SCREENPEN_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:SCREENPEN_VERSION" packaging\windows\screenpen.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: screenpen-windows-x64
-          path: target/release/screenpen.exe
+          path: |
+            target/release/screenpen.exe
+            target/installer/screenpen-setup.exe
   macos:
     runs-on: macos-latest
     steps:
@@ -44,10 +55,18 @@ jobs:
         env:
           SCREENPEN_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
       - run: ditto -c -k --keepParent target/release/screenpen.app screenpen-macos-arm64.zip
+      - name: Disk image (drag the app to Applications)
+        run: |
+          mkdir -p dmg
+          cp -R target/release/screenpen.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname screenpen -srcfolder dmg -ov -format UDZO screenpen-macos-arm64.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: screenpen-macos-arm64
-          path: screenpen-macos-arm64.zip
+          path: |
+            screenpen-macos-arm64.zip
+            screenpen-macos-arm64.dmg
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -60,7 +79,8 @@ jobs:
         run: |
           mkdir -p dist/screenpen
           cp target/release/screenpen dist/screenpen/
-          cp crates/screenpen/src/platform/linux/screenpen.desktop dist/screenpen/
+          cp packaging/linux/screenpen.desktop packaging/linux/install.sh dist/screenpen/
+          cp assets/screenpen-256.png assets/screenpen-512.png dist/screenpen/
           tar -czf screenpen-linux-x64.tar.gz -C dist screenpen
       - uses: actions/upload-artifact@v4
         with:
@@ -87,10 +107,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          mv screenpen.exe "screenpen-$TAG-windows-x64.exe"
+          mv installer/screenpen-setup.exe "screenpen-$TAG-windows-x64-setup.exe"
+          mv release/screenpen.exe "screenpen-$TAG-windows-x64-portable.exe"
+          mv screenpen-macos-arm64.dmg "screenpen-$TAG-macos-arm64.dmg"
           mv screenpen-macos-arm64.zip "screenpen-$TAG-macos-arm64.zip"
           mv screenpen-linux-x64.tar.gz "screenpen-$TAG-linux-x64.tar.gz"
           flags="--generate-notes"
           case "$TAG" in *-*) flags="$flags --prerelease";; esac
-          gh release create "$TAG" "screenpen-$TAG-windows-x64.exe" "screenpen-$TAG-macos-arm64.zip" \
-            "screenpen-$TAG-linux-x64.tar.gz" -R "$GITHUB_REPOSITORY" --title "$TAG" $flags
+          gh release create "$TAG" "screenpen-$TAG-windows-x64-setup.exe" \
+            "screenpen-$TAG-windows-x64-portable.exe" "screenpen-$TAG-macos-arm64.dmg" \
+            "screenpen-$TAG-macos-arm64.zip" "screenpen-$TAG-linux-x64.tar.gz" \
+            -R "$GITHUB_REPOSITORY" --title "$TAG" $flags

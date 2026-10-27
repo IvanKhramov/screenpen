@@ -12,8 +12,9 @@ version=$(printf '%s' "${SCREENPEN_VERSION:-0.1.0}" | sed -E 's/^v//; s/[^0-9.].
 [ -n "$version" ] || version=0.1.0
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/screenpen"
+cp "$(dirname "$0")/../assets/screenpen.icns" "$app/Contents/Resources/screenpen.icns"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -21,10 +22,16 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleExecutable</key>
     <string>screenpen</string>
+    <key>CFBundleIconFile</key>
+    <string>screenpen</string>
     <key>CFBundleIdentifier</key>
     <string>dev.screenpen</string>
     <key>CFBundleName</key>
     <string>screenpen</string>
+    <key>CFBundleDisplayName</key>
+    <string>screenpen</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT License, Ivan Khramov</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
