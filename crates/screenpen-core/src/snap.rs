@@ -300,10 +300,16 @@ mod tests {
         let (data, w, h) = screen(1);
         let map = SnapMap::detect(&data, w, h, 1.0);
         let b = map.box_at(Point::new(120.0, 150.0)).unwrap();
-        assert!((b.x - 50.5).abs() < 1.0 && (b.y - 40.5).abs() < 1.0, "{b:?}");
+        assert!(
+            (b.x - 50.5).abs() < 1.0 && (b.y - 40.5).abs() < 1.0,
+            "{b:?}"
+        );
         assert!((b.width - 199.0).abs() < 1.5 && (b.height - 159.0).abs() < 1.5);
         let panel = map.box_at(Point::new(340.0, 100.0)).unwrap();
-        assert_eq!((panel.x, panel.y, panel.width, panel.height), (300.0, 50.0, 80.0, 200.0));
+        assert_eq!(
+            (panel.x, panel.y, panel.width, panel.height),
+            (300.0, 50.0, 80.0, 200.0)
+        );
         // Outside every box there's only the screen.
         assert_eq!(map.box_at(Point::new(20.0, 280.0)), None);
         // Below the window: a band from it to the screen's bottom isn't a box.
@@ -336,7 +342,10 @@ mod tests {
         let (data, w, h) = screen(2);
         let map = SnapMap::detect(&data, w, h, 2.0);
         let panel = map.box_at(Point::new(340.0, 100.0)).unwrap();
-        assert_eq!((panel.x, panel.y, panel.width, panel.height), (300.0, 50.0, 80.0, 200.0));
+        assert_eq!(
+            (panel.x, panel.y, panel.width, panel.height),
+            (300.0, 50.0, 80.0, 200.0)
+        );
     }
 
     #[test]

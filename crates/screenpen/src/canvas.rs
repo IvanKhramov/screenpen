@@ -1917,7 +1917,11 @@ mod tests {
 
         // Without Ctrl the rectangle is where the pointer was.
         c.doc.remove_all();
-        drag(&mut c, &state, &line((86., 66.), (314., 234.), Mods::default()));
+        drag(
+            &mut c,
+            &state,
+            &line((86., 66.), (314., 234.), Mods::default()),
+        );
         assert_eq!(only_rect(&c), Rect::new(43.0, 33.0, 114.0, 84.0));
     }
 

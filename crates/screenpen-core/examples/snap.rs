@@ -26,7 +26,11 @@ fn main() {
         ..Paint::default()
     };
     let (horizontal, vertical) = map.edges();
-    println!("edges: {} horizontal, {} vertical", horizontal.len(), vertical.len());
+    println!(
+        "edges: {} horizontal, {} vertical",
+        horizontal.len(),
+        vertical.len()
+    );
     if std::env::var_os("SNAP_DEBUG").is_some() {
         println!("{vertical:?}");
     }
