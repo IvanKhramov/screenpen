@@ -78,6 +78,8 @@ pub struct PaletteWindow {
     /// The pointer is over the grip (its tooltip explains dragging and rotating).
     pub grip_hover: bool,
     pub visible: bool,
+    /// The work area the palette is on, as of the last show or move.
+    area: Option<Area>,
 }
 
 impl PaletteWindow {
@@ -93,6 +95,7 @@ impl PaletteWindow {
             tooltip: Popup::new(Win::Tooltip),
             grip_hover: false,
             visible: false,
+            area: None,
         }
     }
 
@@ -113,6 +116,21 @@ impl PaletteWindow {
         if !self.visible {
             return;
         }
+        // The context row opens on the side facing the screen's middle, and the main
+        // bar stays where it is while the window grows around it.
+        let before = self.palette.main_offset();
+        if let Some(area) = self.area {
+            let c = self.center();
+            self.palette.context_first = if self.palette.vertical {
+                c.0 > area.x + area.w / 2
+            } else {
+                c.1 > area.y + area.h / 2
+            };
+        }
+        self.palette.sync(look);
+        let after = self.palette.main_offset();
+        self.origin.0 -= ((after.0 - before.0) * self.scale).round() as i32;
+        self.origin.1 -= ((after.1 - before.1) * self.scale).round() as i32;
         let (w, h) = self.palette.size_px(self.scale);
         if self
             .pixmap
@@ -133,6 +151,7 @@ impl PaletteWindow {
     pub fn show(&mut self, display: &mut dyn Display, monitors: &[Monitor], look: &Look) {
         self.visible = true;
         self.scale = scale_at(monitors, self.center()) * self.ui_scale;
+        self.area = Some(work_area(monitors, self.center()));
         self.render(display, look);
         display.show(Win::Palette);
     }
@@ -178,17 +197,18 @@ impl PaletteWindow {
         }
         self.origin = (x, y);
         self.scale = scale_at(monitors, self.center()) * self.ui_scale;
+        self.area = Some(area);
         self.render(display, look);
     }
 
-    /// Top center of the monitor containing `at`.
+    /// Bottom center of the monitor containing `at`.
     pub fn default_origin(&self, monitors: &[Monitor], at: (i32, i32)) -> (i32, i32) {
         let area = work_area(monitors, at);
         let scale = scale_at(monitors, at) * self.ui_scale;
-        let (w, _) = self.palette.size_px(scale);
+        let (w, h) = self.palette.size_px(scale);
         (
             area.x + (area.w - w as i32) / 2,
-            area.y + (12.0 * scale) as i32,
+            area.bottom() - h as i32 - (16.0 * scale) as i32,
         )
     }
 }

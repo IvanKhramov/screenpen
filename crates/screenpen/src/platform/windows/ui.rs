@@ -146,6 +146,20 @@ impl PaletteWindow {
         if !self.visible {
             return;
         }
+        // The context row opens on the side facing the screen's middle, and the main
+        // bar stays where it is while the window grows around it.
+        let before = self.palette.main_offset();
+        let c = self.center();
+        let area = work_area(c);
+        self.palette.context_first = if self.palette.vertical {
+            c.x > (area.left + area.right) / 2
+        } else {
+            c.y > (area.top + area.bottom) / 2
+        };
+        self.palette.sync(look);
+        let after = self.palette.main_offset();
+        self.origin.x -= ((after.0 - before.0) * self.scale).round() as i32;
+        self.origin.y -= ((after.1 - before.1) * self.scale).round() as i32;
         let (w, h) = self.palette.size_px(self.scale);
         if self
             .surface
@@ -227,14 +241,14 @@ impl PaletteWindow {
         self.render(look);
     }
 
-    /// Top center of the work area containing `at`.
+    /// Bottom center of the work area containing `at`.
     pub fn default_origin(&self, at: POINT) -> POINT {
         let area = work_area(at);
         let scale = scale_at(at) * self.ui_scale;
-        let (w, _) = self.palette.size_px(scale);
+        let (w, h) = self.palette.size_px(scale);
         POINT {
             x: area.left + (area.right - area.left - w as i32) / 2,
-            y: area.top + (12.0 * scale) as i32,
+            y: area.bottom - h as i32 - (16.0 * scale) as i32,
         }
     }
 }

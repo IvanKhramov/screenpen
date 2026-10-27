@@ -35,6 +35,11 @@ mod snapshots;
     allow(dead_code)
 )]
 mod state;
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
+mod theme;
 
 fn main() {
     if std::env::args().any(|a| a == "--settings") {

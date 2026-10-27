@@ -152,29 +152,53 @@ impl PaletteWindow {
         self.panel.mtm()
     }
 
-    /// Size in points.
+    /// Pixels per screen point: `scale` without the interface scale.
+    pub fn backing(&self) -> f64 {
+        (self.scale / self.ui_scale) as f64
+    }
+
+    /// Size in screen points.
     pub fn size(&self) -> (f64, f64) {
         let (w, h) = self.palette.size_px(self.scale);
-        let s = self.scale as f64;
+        let s = self.backing();
         (w as f64 / s, h as f64 / s)
     }
 
     /// Screen points to palette points.
     pub fn to_local(&self, p: (f64, f64)) -> Point {
-        Point::new((p.0 - self.origin.0) as f32, (p.1 - self.origin.1) as f32)
+        let u = self.ui_scale as f64;
+        Point::new(
+            ((p.0 - self.origin.0) / u) as f32,
+            ((p.1 - self.origin.1) / u) as f32,
+        )
     }
 
     pub fn render(&mut self, look: &Look) {
         if !self.visible {
             return;
         }
+        // The context row opens on the side facing the screen's middle, and the main
+        // bar stays where it is while the window grows around it.
+        let before = self.palette.main_offset();
+        let c = self.center();
+        let area = work_area(self.mtm(), c);
+        self.palette.context_first = if self.palette.vertical {
+            c.0 > area.x + area.w / 2.0
+        } else {
+            c.1 > area.y + area.h / 2.0
+        };
+        self.palette.sync(look);
+        let after = self.palette.main_offset();
+        let u = self.ui_scale as f64;
+        self.origin.0 -= (after.0 - before.0) as f64 * u;
+        self.origin.1 -= (after.1 - before.1) as f64 * u;
         let (w, h) = self.palette.size_px(self.scale);
         let Some(mut pixmap) = Pixmap::new(w, h) else {
             return;
         };
         self.palette
             .render(&mut pixmap.as_mut(), self.scale, ChannelOrder::Rgba, look);
-        self.view.set_pixels(pixmap, self.scale as f64);
+        self.view.set_pixels(pixmap, self.backing());
         let (pw, ph) = self.size();
         let frame = Frame {
             x: self.origin.0,
@@ -231,10 +255,13 @@ impl PaletteWindow {
         self.render(look);
     }
 
-    /// Top center of the work area containing `at`.
+    /// Bottom center of the work area containing `at`.
     pub fn default_origin(&self, at: (f64, f64)) -> (f64, f64) {
         let area = work_area(self.mtm(), at);
-        let (w, _) = self.palette.size_px(1.0);
-        (area.x + (area.w - w as f64) / 2.0, area.y + 12.0)
+        let (w, h) = self.palette.size_px(self.ui_scale);
+        (
+            area.x + (area.w - w as f64) / 2.0,
+            area.y + area.h - h as f64 - 16.0,
+        )
     }
 }

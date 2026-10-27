@@ -31,6 +31,10 @@ pub struct ToolState {
     /// Multiplier for the palette, tooltips, cheat sheet and settings window,
     /// on top of the system scale.
     pub ui_scale: f32,
+    /// "system", "dark" or "light".
+    pub theme: String,
+    /// Shortcut letters in the palette button corners.
+    pub key_badges: bool,
 }
 
 impl Default for ToolState {
@@ -45,6 +49,8 @@ impl Default for ToolState {
             whiteboard: false,
             shortcuts: Shortcuts::default(),
             text_size: 28.0,
+            theme: "system".to_string(),
+            key_badges: true,
             text_style: TextStyle::default(),
             ui_scale: 1.0,
         }

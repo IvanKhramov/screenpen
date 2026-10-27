@@ -1482,6 +1482,11 @@ impl Canvas {
                 state.step_width(action == Action::Thicker);
                 (Repaint::None, Some(Request::StateChanged))
             }
+            Action::Width(i) => {
+                let presets = screenpen_core::shortcuts::WIDTH_PRESETS;
+                state.width = presets[(i as usize).min(presets.len() - 1)];
+                (Repaint::None, Some(Request::StateChanged))
+            }
             Action::Clear => {
                 self.cancel();
                 self.doc.remove_all();
@@ -1800,7 +1805,7 @@ mod tests {
             &line((5., 5.), (200., 100.), Mods::default()),
         );
         assert_eq!(c.selection.len(), 1);
-        c.perform(&mut state, Action::Color(4));
+        c.perform(&mut state, Action::Color(3));
         let colors: Vec<_> = c.doc.annotations().iter().map(|a| a.style.color).collect();
         assert_eq!(colors, [Rgba::BLUE, Rgba::RED]);
         assert_eq!(

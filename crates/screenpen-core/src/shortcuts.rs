@@ -195,6 +195,8 @@ pub enum Action {
     Color(u8),
     Thinner,
     Thicker,
+    /// A width preset (0-2), see `WIDTH_PRESETS`.
+    Width(u8),
     /// Text size, for the text being typed, the selected text or new text.
     TextSmaller,
     TextBigger,
@@ -240,6 +242,7 @@ impl Action {
         match self {
             Action::Tool(t) => format!("tool.{}", t.name()),
             Action::Color(i) => format!("color.{}", i + 1),
+            Action::Width(i) => format!("width.{}", i + 1),
             other => {
                 let s = match other {
                     Action::Thinner => "thinner",
@@ -265,7 +268,7 @@ impl Action {
                     Action::ToggleDrawing => "toggle_drawing",
                     Action::ExitGhost => "exit_ghost",
                     Action::Quit => "quit",
-                    Action::Tool(_) | Action::Color(_) => unreachable!(),
+                    Action::Tool(_) | Action::Color(_) | Action::Width(_) => unreachable!(),
                 };
                 s.to_string()
             }
@@ -323,6 +326,9 @@ impl Default for Shortcuts {
         b.extend([
             (Action::Thinner, key('[')),
             (Action::Thicker, key(']')),
+            (Action::Width(0), None),
+            (Action::Width(1), None),
+            (Action::Width(2), None),
             (Action::TextSmaller, Some(Chord::ctrl(Char('-')))),
             (Action::TextBigger, Some(Chord::ctrl(Char('=')))),
             (Action::Bold, Some(Chord::ctrl(Char('B')))),
@@ -393,6 +399,9 @@ impl Shortcuts {
         out
     }
 }
+
+/// Pen widths behind the S, M and L buttons.
+pub const WIDTH_PRESETS: [f32; 3] = [2.0, 4.0, 8.0];
 
 /// Width presets that Thinner and Thicker step through.
 pub const WIDTH_STEPS: [f32; 10] = [1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0];

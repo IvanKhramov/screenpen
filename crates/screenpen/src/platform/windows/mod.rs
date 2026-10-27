@@ -62,7 +62,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::canvas::{Button, Canvas, Mods, Pointer, Repaint, Request, typing_action};
 use crate::config::{PaletteSettings, Settings};
 use crate::i18n::{Lang, T};
-use crate::palette::{Hit, Item, Look, Palette, render_cheat_sheet, render_tooltip};
+use crate::palette::{Hit, Item, Look, Palette, Press, Theme, render_cheat_sheet, render_tooltip};
 use crate::snapshots;
 use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState, step_ui_scale};
 
@@ -137,11 +137,7 @@ pub fn run() {
     let tray_hwnd = create_window(TRAY_CLASS, WS_EX_TOOLWINDOW, 0, 0);
     unsafe { SetWindowTextW(tray_hwnd, wide(&instance::title()).as_ptr()) };
     let state = ToolState::default();
-    let palette = Palette {
-        items: Item::defaults(),
-        vertical: false,
-        hover: None,
-    };
+    let palette = Palette::new(Item::defaults(), false);
     let sheet = ui::Popup::new(SHEET_CLASS, false);
     // The cheat sheet is for the presenter only.
     ui::set_capture_hidden(sheet.hwnd, true);
@@ -335,6 +331,7 @@ fn save_settings(app: &App) {
     }
     let p = &app.palette;
     let palette = PaletteSettings {
+        version: crate::config::PALETTE_VERSION,
         items: p.palette.items.iter().map(|i| i.name()).collect(),
         vertical: p.palette.vertical,
         x: app.palette_placed.then_some(p.origin.x),
@@ -1008,6 +1005,10 @@ fn look(app: &App) -> Look {
         colors: app.state.colors,
         ghost: app.ghost,
         whiteboard: app.state.whiteboard,
+        width: app.state.width,
+        text_size: app.state.text_size,
+        theme: Theme::from_setting(&app.state.theme),
+        badges: app.state.key_badges.then(|| app.state.shortcuts.clone()),
     }
 }
 
@@ -1084,8 +1085,13 @@ fn on_palette_pointer(app: &mut App, msg: u32, screen: POINT, flags: usize) {
                     }
                 }
                 Some(Hit::Item(i)) => {
-                    let item = app.palette.palette.items[i];
-                    palette_item(app, item);
+                    let look = look(app);
+                    match app.palette.palette.press(i, &look) {
+                        Press::Run(action) => palette_action(app, action),
+                        Press::Settings => open_settings(app),
+                        Press::None => {}
+                    }
+                    render_palette(app);
                 }
                 None => {}
             }
@@ -1138,7 +1144,10 @@ fn show_tooltip(app: &mut App) {
     let (cells, grip, _) = app.palette.palette.layout();
     let (text, cell) = match app.palette.palette.hover {
         Some(i) => (
-            app.palette.palette.items[i].tooltip(app.lang, &app.state.shortcuts),
+            app.palette
+                .palette
+                .item(i)
+                .tooltip(app.lang, &app.state.shortcuts),
             cells[i],
         ),
         None if app.palette.grip_hover => (app.lang.t(T::Grip).to_string(), grip),
@@ -1177,18 +1186,18 @@ fn show_tooltip(app: &mut App) {
     app.palette.tooltip.show(&pixmap, at);
 }
 
-fn palette_item(app: &mut App, item: Item) {
+fn palette_action(app: &mut App, action: Action) {
     let target = focused_overlay(app);
-    match item {
-        Item::Settings => open_settings(app),
-        Item::Action(Action::Ghost) => set_ghost(app, !app.ghost),
-        Item::Action(Action::Help) => toggle_sheet(app, target),
-        Item::Action(Action::Clear) => {
+    match action {
+        Action::Ghost => set_ghost(app, !app.ghost),
+        Action::Help => toggle_sheet(app, target),
+        Action::ToggleDrawing => hide(app),
+        Action::Clear => {
             for o in 0..app.overlays.len() {
                 run_action(app, o, Action::Clear);
             }
         }
-        Item::Action(action) => run_action(app, target, action),
+        action => run_action(app, target, action),
     }
 }
 

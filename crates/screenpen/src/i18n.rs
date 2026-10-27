@@ -55,8 +55,8 @@ impl Lang {
         match (self, key) {
             (En, Draw) => "Draw",
             (Ru, Draw) => "Рисовать",
-            (En, GhostMenu) => "Ghost mode (click through)",
-            (Ru, GhostMenu) => "Режим призрака (клики насквозь)",
+            (En, GhostMenu) => "Mouse mode (drawing stays, clicks go through)",
+            (Ru, GhostMenu) => "Режим мыши (рисунок остаётся, клики проходят)",
             (En, Whiteboard) => "Whiteboard",
             (Ru, Whiteboard) => "Белая доска",
             (En, DimMenu) => "Dim screen while drawing",
@@ -115,20 +115,20 @@ impl Lang {
             (Ru, TipIdle) => "screenpen: {key}, чтобы рисовать",
             (En, TipDrawing) => "screenpen: drawing (Esc to stop)",
             (Ru, TipDrawing) => "screenpen: рисование (Esc, чтобы закончить)",
-            (En, TipGhost) => "screenpen: ghost mode ({key} to draw)",
-            (Ru, TipGhost) => "screenpen: режим призрака ({key}, чтобы рисовать)",
+            (En, TipGhost) => "screenpen: mouse mode ({key} to draw)",
+            (Ru, TipGhost) => "screenpen: режим мыши ({key}, чтобы рисовать)",
             (En, CheatSheet) => "Shortcuts",
             (Ru, CheatSheet) => "Горячие клавиши",
             (En, CheatSheetClose) => "Press ? or Esc to close",
-            (Ru, CheatSheetClose) => "? или Esc, чтобы закрыть",
+            (Ru, CheatSheetClose) => "Нажмите ? или Esc, чтобы закрыть",
             (En, WithPen) => {
                 "With the pen: Ctrl rectangle, Ctrl+Alt ellipse, Alt arrow, Shift straight/square. Right button erases."
             }
             (Ru, WithPen) => {
                 "Пером: Ctrl прямоугольник, Ctrl+Alt эллипс, Alt стрелка, Shift ровно/квадрат. Правая кнопка стирает."
             }
-            (En, Grip) => "Drag to move, double-click to rotate",
-            (Ru, Grip) => "Тащи, чтобы подвинуть, двойной клик поворачивает",
+            (En, Grip) => "Drag to move. Double-click to rotate",
+            (Ru, Grip) => "Перетащите, чтобы подвинуть. Двойной клик поворачивает",
             (En, NoShortcut) => "no shortcut",
             (Ru, NoShortcut) => "без клавиши",
         }
@@ -198,6 +198,10 @@ impl Lang {
             Action::Tool(tool) => self.tool(tool).to_string(),
             Action::Color(i) => self.color(i),
             Action::Thinner => fixed("Thinner", "Тоньше"),
+            Action::Width(i) => {
+                let size = ["S", "M", "L"].get(i as usize).copied().unwrap_or("?");
+                format!("{} {size}", fixed("Width", "Толщина"))
+            }
             Action::Thicker => fixed("Thicker", "Толще"),
             Action::TextSmaller => fixed("Smaller text", "Текст мельче"),
             Action::TextBigger => fixed("Bigger text", "Текст крупнее"),
@@ -210,17 +214,15 @@ impl Lang {
             Action::BringToFront => fixed("Bring to front", "Наверх"),
             Action::DeleteSelection => fixed("Delete selection", "Удалить выделенное"),
             Action::Escape => fixed("Deselect / stop drawing", "Снять выделение / закончить"),
-            Action::Ghost => fixed("Ghost mode", "Режим призрака"),
+            Action::Ghost => fixed("Mouse", "Мышь"),
             Action::Whiteboard => fixed("Whiteboard", "Белая доска"),
             Action::Spotlight => fixed("Spotlight", "Прожектор"),
             Action::Freeze => fixed("Freeze the screen", "Заморозить экран"),
             Action::Magnifier => fixed("Magnifier", "Лупа"),
             Action::Snapshot => fixed("Screenshot with drawing", "Снимок экрана с рисунком"),
             Action::Help => fixed("Shortcuts", "Горячие клавиши"),
-            Action::ToggleDrawing => {
-                fixed("Start / stop drawing", "Включить / выключить рисование")
-            }
-            Action::ExitGhost => fixed("Leave ghost mode", "Выйти из режима призрака"),
+            Action::ToggleDrawing => fixed("Drawing on / off", "Рисование вкл / выкл"),
+            Action::ExitGhost => fixed("Back to drawing", "Вернуться к рисованию"),
             Action::Quit => fixed("Quit", "Выход"),
         }
     }

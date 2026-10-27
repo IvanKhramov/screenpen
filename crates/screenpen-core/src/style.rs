@@ -30,16 +30,17 @@ impl Rgba {
     pub const PINK: Rgba = Rgba::rgb(1.0, 0.18, 0.57);
 
     /// The default swatches, bound to keys 1-9.
+    /// The first six are on the palette.
     pub const PALETTE: [Rgba; 9] = [
         Rgba::RED,
-        Rgba::ORANGE,
         Rgba::YELLOW,
         Rgba::GREEN,
         Rgba::BLUE,
-        Rgba::PURPLE,
-        Rgba::PINK,
         Rgba::WHITE,
         Rgba::BLACK,
+        Rgba::ORANGE,
+        Rgba::PURPLE,
+        Rgba::PINK,
     ];
 
     /// White on dark colors, black on light ones (badge numbers).

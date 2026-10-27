@@ -37,6 +37,10 @@ pub struct Settings {
     pub text_outline: bool,
     /// Interface scale (palette, tooltips, cheat sheet, settings), 0.75..=2.
     pub ui_scale: f32,
+    /// "system", "dark" or "light".
+    pub theme: String,
+    /// Shortcut letters in the palette button corners.
+    pub key_badges: bool,
     pub palette: PaletteSettings,
     /// Action name to chord, e.g. "tool.pen" = "P". An empty string turns it off.
     pub shortcuts: BTreeMap<String, String>,
@@ -45,6 +49,9 @@ pub struct Settings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PaletteSettings {
+    /// Files before the redesign have none (0) and get the new default palette.
+    #[serde(default)]
+    pub version: u32,
     pub items: Vec<String>,
     pub vertical: bool,
     /// Top-left corner in screen pixels; unset places it at the top center.
@@ -52,9 +59,26 @@ pub struct PaletteSettings {
     pub y: Option<i32>,
 }
 
+/// Bumped when the default palette changes enough to replace saved ones.
+pub const PALETTE_VERSION: u32 = 2;
+
+/// The swatch order before the redesign, to recognize untouched colors.
+const OLD_COLORS: [Rgba; 9] = [
+    Rgba::RED,
+    Rgba::ORANGE,
+    Rgba::YELLOW,
+    Rgba::GREEN,
+    Rgba::BLUE,
+    Rgba::PURPLE,
+    Rgba::PINK,
+    Rgba::WHITE,
+    Rgba::BLACK,
+];
+
 impl Default for PaletteSettings {
     fn default() -> Self {
         PaletteSettings {
+            version: PALETTE_VERSION,
             items: Item::defaults().iter().map(|i| i.name()).collect(),
             vertical: false,
             x: None,
@@ -115,14 +139,42 @@ impl Settings {
                 Settings::default(),
                 Some(format!("{}: {e}", path.display())),
             ),
-            Ok(text) => match toml::from_str(&text) {
-                Ok(s) => (s, None),
+            Ok(text) => match toml::from_str::<Settings>(&text) {
+                Ok(mut s) => {
+                    s.migrate();
+                    (s, None)
+                }
                 Err(e) => (
                     Settings::default(),
                     Some(format!("{}: {e}", path.display())),
                 ),
             },
         }
+    }
+
+    /// Brings a file from an older version up to date.
+    fn migrate(&mut self) {
+        if self.palette.version < 2 {
+            // The redesigned palette: new items, new place (bottom center).
+            self.palette = PaletteSettings {
+                vertical: false,
+                ..PaletteSettings::default()
+            };
+            let untouched = self.colors.len() == OLD_COLORS.len()
+                && self
+                    .colors
+                    .iter()
+                    .zip(OLD_COLORS)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(&hex(b)));
+            if untouched {
+                let color = self.colors.get(self.color.wrapping_sub(1)).cloned();
+                self.colors = Rgba::PALETTE.iter().map(|c| hex(*c)).collect();
+                self.color = color
+                    .and_then(|c| self.colors.iter().position(|n| n.eq_ignore_ascii_case(&c)))
+                    .map_or(1, |i| i + 1);
+            }
+        }
+        self.palette.version = PALETTE_VERSION;
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -159,6 +211,8 @@ impl Settings {
             text_background: state.text_style.background,
             text_outline: state.text_style.outline,
             ui_scale: state.ui_scale,
+            theme: state.theme.clone(),
+            key_badges: state.key_badges,
             palette: palette.clone(),
             shortcuts: state
                 .shortcuts
@@ -203,6 +257,11 @@ impl Settings {
         } else {
             1.0
         };
+        state.theme = match self.theme.as_str() {
+            t @ ("dark" | "light") => t.to_string(),
+            _ => "system".to_string(),
+        };
+        state.key_badges = self.key_badges;
         for (name, text) in &self.shortcuts {
             let Some(action) = Action::from_name(name) else {
                 problems.push(format!("shortcuts: unknown action {name:?}"));
