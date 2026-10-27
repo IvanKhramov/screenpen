@@ -225,6 +225,8 @@ pub enum Action {
     Magnifier,
     /// Save the screen with the ink to a PNG and copy it to the clipboard.
     Snapshot,
+    /// A countdown in the corner; again to remove it.
+    Timer,
     Help,
     /// Global: start or stop drawing.
     ToggleDrawing,
@@ -272,6 +274,7 @@ impl Action {
                     Action::Freeze => "freeze",
                     Action::Magnifier => "magnifier",
                     Action::Snapshot => "snapshot",
+                    Action::Timer => "timer",
                     Action::Help => "help",
                     Action::ToggleDrawing => "toggle_drawing",
                     Action::ExitGhost => "exit_ghost",
@@ -371,6 +374,7 @@ impl Default for Shortcuts {
             (Action::Freeze, key('F')),
             (Action::Magnifier, key('M')),
             (Action::Snapshot, Some(Chord::ctrl(Char('S')))),
+            (Action::Timer, Some(Chord::ctrl(Char('T')))),
             (
                 Action::Help,
                 Some(Chord {

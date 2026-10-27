@@ -98,6 +98,38 @@ const LASER_POINTS: usize = 600;
 /// Spotlight radius in points, and its limits for the wheel.
 const SPOTLIGHT_RADIUS: f32 = 140.0;
 const SPOTLIGHT_LIMITS: (f32, f32) = (40.0, 600.0);
+/// The timer's text size and distance from the screen's top-right corner, in points.
+const TIMER_SIZE: f32 = 26.0;
+const TIMER_MARGIN: f32 = 24.0;
+
+#[derive(Clone, Copy, Debug)]
+struct Timer {
+    ends_at: f64,
+    /// Seconds left when paused.
+    paused: Option<f64>,
+}
+
+impl Timer {
+    fn new(seconds: f64) -> Timer {
+        Timer {
+            ends_at: now() + seconds,
+            paused: None,
+        }
+    }
+
+    /// Seconds to go; negative once over.
+    fn left(self) -> f64 {
+        self.paused.unwrap_or_else(|| self.ends_at - now())
+    }
+
+    fn toggle_pause(&mut self) {
+        match self.paused.take() {
+            Some(left) => self.ends_at = now() + left,
+            None => self.paused = Some(self.left()),
+        }
+    }
+}
+
 /// The toast: text size, distance from the top (points) and how long it shows.
 const TOAST_SIZE: f32 = 15.0;
 const TOAST_TOP: f32 = 28.0;
@@ -296,6 +328,7 @@ pub struct Canvas {
     guides: Vec<(Point, Point)>,
     /// A short message at the top of the screen, and when it appeared.
     toast: Option<(String, f64)>,
+    timer: Option<Timer>,
     /// The arrow just drawn (tail, head), for Enter to caption it.
     last_arrow: Option<(Point, Point)>,
 }
@@ -331,6 +364,7 @@ impl Canvas {
             guides: Vec::new(),
             toast: None,
             last_arrow: None,
+            timer: None,
         })
     }
 
@@ -518,6 +552,68 @@ impl Canvas {
         self.laser.released.is_some()
             || matches!(self.gesture, Gesture::Freehand { .. })
             || self.toast.is_some()
+            || self.timer.is_some_and(|t| t.paused.is_none())
+    }
+
+    /// Where the timer is drawn, in points, and what it says.
+    fn timer_layout(&self) -> Option<(Rect, String, Rgba)> {
+        let timer = self.timer?;
+        let left = timer.left();
+        let secs = left.abs().ceil() as u64;
+        let sign = if left < -0.5 { "+" } else { "" };
+        let text = format!("{sign}{}:{:02}", secs / 60, secs % 60);
+        let color = if left <= 0.0 {
+            // Blinks for the first seconds over.
+            if left > -4.0 && (left * 2.0).floor() as i64 % 2 == 0 {
+                Rgba::rgb(0.55, 0.08, 0.08)
+            } else {
+                Rgba::rgb(0.86, 0.15, 0.15)
+            }
+        } else if left <= 60.0 {
+            Rgba::rgb(0.85, 0.5, 0.05)
+        } else {
+            Rgba::rgb(0.11, 0.11, 0.12)
+        };
+        // Wide enough for "+00:00" so the pill doesn't jitter as digits change.
+        let (w, h) = (TIMER_SIZE * 4.2, TIMER_SIZE * 1.7);
+        let x = self.width as f32 / self.scale - w - TIMER_MARGIN;
+        Some((Rect::new(x, TIMER_MARGIN, w, h), text, color))
+    }
+
+    fn draw_timer(&self, target: &mut PixmapMut) {
+        let Some((rect, text, color)) = self.timer_layout() else {
+            return;
+        };
+        let paused = self.timer.is_some_and(|t| t.paused.is_some());
+        let t = self.transform();
+        let mut paint = Paint {
+            anti_alias: true,
+            ..Paint::default()
+        };
+        if let Some(pill) = rounded_rect(rect, rect.height / 2.0) {
+            paint.set_color(skia_color(color.with_alpha(0.9), self.order));
+            target.fill_path(&pill, &paint, FillRule::Winding, t, None);
+        }
+        let Some(path) = screenpen_core::text::path(&text, TIMER_SIZE, Point::default()) else {
+            return;
+        };
+        let b = path.bounds();
+        let dx = rect.x + (rect.width - b.width()) / 2.0 - b.left();
+        let dy = rect.y + (rect.height - b.height()) / 2.0 - b.top();
+        if let Some(glyphs) = path.transform(Transform::from_translate(dx, dy)) {
+            let alpha = if paused { 0.5 } else { 1.0 };
+            paint.set_color(skia_color(Rgba::WHITE.with_alpha(alpha), self.order));
+            target.fill_path(&glyphs, &paint, FillRule::Winding, t, None);
+        }
+    }
+
+    /// Clicks on the timer pause and resume it.
+    fn timer_click(&mut self, at: Point) -> bool {
+        let on_pill = self.timer_layout().is_some_and(|(r, _, _)| r.contains(at));
+        if let (true, Some(timer)) = (on_pill, &mut self.timer) {
+            timer.toggle_pause();
+        }
+        on_pill
     }
 
     /// Shows `text` at the top of the screen for a moment.
@@ -690,6 +786,9 @@ impl Canvas {
         if let Some((b, _)) = self.toast_layout() {
             add(b);
         }
+        if let Some((b, _, _)) = self.timer_layout() {
+            add(b);
+        }
         for (a, b) in &self.guides {
             add(Rect::from_points(*a, *b));
         }
@@ -747,6 +846,7 @@ impl Canvas {
         self.draw_spotlight(target, region);
         self.draw_laser(target);
         self.draw_toast(target);
+        self.draw_timer(target);
         match &self.gesture {
             Gesture::Shape {
                 preview: Some(a), ..
@@ -985,6 +1085,9 @@ impl Canvas {
         self.snap_hint = None;
         self.guides.clear();
         self.last_arrow = None;
+        if button == Button::Left && self.timer_click(at) {
+            return Repaint::None;
+        }
         if button == Button::Left && p.mods.ctrl && self.spotlight.is_some() {
             return self.toggle_focus(at);
         }
@@ -1911,6 +2014,13 @@ impl Canvas {
                 }
             }
             Action::Caption => (self.caption(state), None),
+            Action::Timer => {
+                self.timer = match self.timer {
+                    Some(_) => None,
+                    None => Some(Timer::new(state.timer_minutes as f64 * 60.0)),
+                };
+                (Repaint::Full, None)
+            }
             Action::Preset(i) => {
                 let Some(&p) = state.presets.get(i as usize) else {
                     return (Repaint::None, None);
@@ -2378,6 +2488,31 @@ mod tests {
         c.pointer_up(&state, at(10., 10.));
         c.perform(&mut state, Action::Caption);
         assert!(!c.is_typing());
+    }
+
+    #[test]
+    fn timer_counts_down_in_the_corner_and_pauses_on_click() {
+        let mut c = canvas();
+        let mut state = ToolState::default();
+        c.perform(&mut state, Action::Timer);
+        let (rect, text, _) = c.timer_layout().unwrap();
+        assert!(text == "5:00" || text == "4:59", "{text}");
+        assert!(c.animating());
+        let mut target = Pixmap::new(400, 300).unwrap();
+        c.paint(&mut target.as_mut(), Repaint::Full);
+        let mid = rect.center();
+        assert!(opaque(
+            &target,
+            (mid.x * 2.0) as u32,
+            (rect.y * 2.0 + 4.0) as u32
+        ));
+        // A click on it pauses: no drawing, no more ticks.
+        let p = at(mid.x * 2.0, mid.y * 2.0);
+        c.pointer_down(&state, p, Button::Left);
+        c.pointer_up(&state, p);
+        assert!(c.doc.annotations().is_empty() && !c.animating());
+        c.perform(&mut state, Action::Timer);
+        assert!(c.timer_layout().is_none());
     }
 
     #[test]

@@ -32,10 +32,11 @@ const SHAPES: [ToolKind; 5] = [
     ToolKind::Pixelate,
 ];
 
-const MORE: [Item; 5] = [
+const MORE: [Item; 6] = [
     Item::Action(Action::Whiteboard),
     Item::Action(Action::Freeze),
     Item::Action(Action::Snapshot),
+    Item::Action(Action::Timer),
     Item::Action(Action::Help),
     Item::Settings,
 ];
@@ -95,6 +96,7 @@ impl Item {
                 Action::Whiteboard,
                 Action::Freeze,
                 Action::Snapshot,
+                Action::Timer,
                 Action::Help,
             ]
             .map(Item::Action),
@@ -142,7 +144,9 @@ impl Item {
             Item::Action(
                 Action::SelectAll | Action::BringToFront | Action::DeleteSelection | Action::Escape,
             ) => 5,
-            Item::Action(Action::Whiteboard | Action::Freeze | Action::Snapshot) => 9,
+            Item::Action(
+                Action::Whiteboard | Action::Freeze | Action::Snapshot | Action::Timer,
+            ) => 9,
             _ => 6,
         }
     }
@@ -1082,6 +1086,23 @@ fn draw_icon(
                 (15.2, 11.9),
             ];
             stroke(pixmap, polyline(cell, &pts, true), ink, 1.7, t, o);
+        }
+        Action::Timer => {
+            let c = Point::new(cell.center().x, cell.center().y + 1.0);
+            stroke(
+                pixmap,
+                PathBuilder::from_circle(c.x, c.y, 7.0),
+                ink,
+                1.8,
+                t,
+                o,
+            );
+            line(
+                pixmap,
+                &[(c.x, c.y - 4.5), (c.x, c.y), (c.x + 3.0, c.y + 2.0)],
+                1.8,
+            );
+            line(pixmap, &[(c.x - 2.5, 2.0), (c.x + 2.5, 2.0)], 1.8);
         }
         Action::Whiteboard => {
             stroke(

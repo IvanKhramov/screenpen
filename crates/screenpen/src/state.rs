@@ -13,6 +13,9 @@ pub const DIM_LEVELS: [(f32, &str); 4] = [
     (0.65, "Strongly"),
 ];
 
+/// Timer lengths offered in the settings, in minutes.
+pub const TIMER_MINUTES: [f32; 5] = [3.0, 5.0, 10.0, 15.0, 25.0];
+
 /// Auto-fade presets in seconds.
 pub const FADE_SECONDS: [f32; 4] = [3.0, 5.0, 10.0, 30.0];
 
@@ -66,6 +69,8 @@ pub struct ToolState {
     /// Shortcut letters in the palette button corners.
     pub key_badges: bool,
     pub presets: [Preset; 3],
+    /// How long the timer counts down.
+    pub timer_minutes: f32,
     /// For messages drawn on the screen.
     pub lang: Lang,
 }
@@ -85,6 +90,7 @@ impl Default for ToolState {
             theme: "system".to_string(),
             key_badges: true,
             presets: Preset::DEFAULTS,
+            timer_minutes: 5.0,
             lang: Lang::En,
             text_style: TextStyle::default(),
             ui_scale: 1.0,

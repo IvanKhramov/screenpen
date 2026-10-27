@@ -1152,6 +1152,8 @@ fn run_action(app: &mut App, index: usize, action: Action) {
     };
     let (repaint, request) = o.canvas.perform(&mut app.state, action);
     paint(o, repaint);
+    // Toasts and the timer animate.
+    update_fade_timer(app);
     match request {
         None => {}
         Some(Request::StopDrawing) => hide(app),

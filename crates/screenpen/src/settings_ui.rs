@@ -11,7 +11,7 @@ use crate::config::{Settings, default_path, parse_hex};
 use crate::i18n::Lang;
 use crate::palette::{Item, Look, Palette, Theme, chord_label, render_item_icon};
 use crate::snapshots;
-use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState, UI_SCALE, step_ui_scale};
+use crate::state::{DIM_LEVELS, FADE_SECONDS, TIMER_MINUTES, ToolState, UI_SCALE, step_ui_scale};
 use screenpen_core::render::ChannelOrder;
 
 pub const TITLE: &str = "screenpen settings";
@@ -178,6 +178,7 @@ struct Edited {
     ui_scale: f32,
     theme: String,
     key_badges: bool,
+    timer_minutes: f32,
 }
 
 fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
@@ -238,6 +239,7 @@ impl SettingsApp {
             ui_scale: self.state.ui_scale,
             theme: self.state.theme.clone(),
             key_badges: self.state.key_badges,
+            timer_minutes: self.state.timer_minutes,
         }
     }
 
@@ -297,6 +299,9 @@ impl SettingsApp {
         }
         if now.key_badges != before.key_badges {
             state.key_badges = now.key_badges;
+        }
+        if now.timer_minutes != before.timer_minutes {
+            state.timer_minutes = now.timer_minutes;
         }
         let settings = Settings::capture(
             &state,
@@ -759,6 +764,20 @@ impl SettingsApp {
                                 .clicked()
                             {
                                 self.state.auto_fade = Some(seconds);
+                            }
+                        }
+                    });
+                    ui.end_row();
+
+                    row(ui, tr(lang, "Timer (Ctrl+T)", "Таймер (Ctrl+T)"));
+                    ui.horizontal(|ui| {
+                        for minutes in TIMER_MINUTES {
+                            let label = format!("{minutes} {}", tr(lang, "min", "мин"));
+                            if ui
+                                .selectable_label(self.state.timer_minutes == minutes, label)
+                                .clicked()
+                            {
+                                self.state.timer_minutes = minutes;
                             }
                         }
                     });

@@ -42,6 +42,8 @@ pub struct Settings {
     /// Shortcut letters in the palette button corners.
     pub key_badges: bool,
     pub palette: PaletteSettings,
+    /// How long the timer (Ctrl+T) counts down.
+    pub timer_minutes: f32,
     /// Shift+1..3: tool name, 1-based color and width.
     pub presets: Vec<PresetSettings>,
     /// Action name to chord, e.g. "tool.pen" = "P". An empty string turns it off.
@@ -223,6 +225,7 @@ impl Settings {
             theme: state.theme.clone(),
             key_badges: state.key_badges,
             palette: palette.clone(),
+            timer_minutes: state.timer_minutes,
             presets: state
                 .presets
                 .iter()
@@ -280,6 +283,11 @@ impl Settings {
             _ => "system".to_string(),
         };
         state.key_badges = self.key_badges;
+        state.timer_minutes = if self.timer_minutes.is_finite() {
+            self.timer_minutes.clamp(1.0, 180.0)
+        } else {
+            5.0
+        };
         for (slot, p) in state.presets.iter_mut().zip(&self.presets) {
             match ToolKind::from_name(&p.tool) {
                 Some(tool) => {
