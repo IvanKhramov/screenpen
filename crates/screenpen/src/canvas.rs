@@ -13,10 +13,11 @@ use std::collections::HashSet;
 use screenpen_core::annotation::{AnnotationId, now};
 use screenpen_core::render::{ChannelOrder, bounds, draw, hit_test, segment_outline, skia_color};
 use screenpen_core::shortcuts::next_text_size;
+use screenpen_core::text_edit::{Motion, TextBuffer};
 use screenpen_core::tools::shape_geometry;
 use screenpen_core::{
-    Action, Annotation, AnnotationKind, BadgeFormat, Document, Geometry, Point, PressureFilter,
-    Rect, Rgba, StrokeBuilder, Style, TextStyle, ToolKind,
+    Action, Annotation, AnnotationKind, BadgeFormat, Chord, Document, Geometry, Key, Point,
+    PressureFilter, Rect, Rgba, StrokeBuilder, Style, TextStyle, ToolKind,
 };
 use tiny_skia::{
     FillRule, IntRect, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, PixmapPaint,
@@ -130,11 +131,28 @@ enum Gesture {
         initial: HashSet<AnnotationId>,
         rect: Rect,
     },
+    /// Dragging inside the text being edited selects.
+    TextSelect,
+}
+
+/// What a key did to the text being edited.
+#[derive(Debug, PartialEq)]
+pub enum TextKey {
+    Handled(Repaint),
+    /// Put this on the clipboard.
+    Copy(String),
+    /// Read the clipboard and pass it to `Canvas::paste`.
+    Paste,
 }
 
 struct TextEdit {
     origin: Point,
-    string: String,
+    buffer: TextBuffer,
+    /// Earlier states for Ctrl+Z, and undone ones for Ctrl+Y.
+    undo: Vec<TextBuffer>,
+    redo: Vec<TextBuffer>,
+    /// The last change was typed chars: the next one joins its undo step.
+    typing: bool,
     font_size: f32,
     style: TextStyle,
     color: Rgba,
@@ -502,6 +520,9 @@ impl Canvas {
         if let Some(a) = self.text_annotation() {
             let b = bounds(&a).unwrap_or(Rect::new(a_origin(&a).x, a_origin(&a).y, 0.0, 0.0));
             add(b.union(self.caret(&a)));
+            for r in self.selection_rects() {
+                add(r);
+            }
         }
         for p in self.laser.trail.iter().chain(&self.laser.at) {
             add(Rect::new(p.x - 14.0, p.y - 14.0, 28.0, 28.0));
@@ -596,6 +617,13 @@ impl Canvas {
             );
         }
         if let Some(a) = self.text_annotation() {
+            let mut highlight = accent.clone();
+            highlight.set_color(skia_color(ACCENT.with_alpha(0.3), self.order));
+            for r in self.selection_rects() {
+                if let Some(r) = r.to_skia() {
+                    target.fill_rect(r, &highlight, t, None);
+                }
+            }
             draw(target, &a, t, self.order);
             if let Some(path) = self.caret(&a).to_skia().map(PathBuilder::from_rect) {
                 let mut caret = accent.clone();
@@ -734,6 +762,19 @@ impl Canvas {
             // Hold the right button to erase with any tool.
             return self.begin_erase(state, at);
         }
+        if self.text.is_some() && state.tool == ToolKind::Text && self.on_text(at) {
+            let index = self.text_index(at);
+            if let Some(t) = &mut self.text {
+                if p.double_click {
+                    t.buffer.select_word(index);
+                } else {
+                    t.buffer.set_caret(index, p.mods.shift);
+                    self.gesture = Gesture::TextSelect;
+                }
+                t.typing = false;
+            }
+            return Repaint::None;
+        }
         if self.text.is_some() {
             let committed = self.end_text();
             if state.tool == ToolKind::Text {
@@ -793,6 +834,13 @@ impl Canvas {
                 Repaint::None
             }
             Gesture::Idle => Repaint::None,
+            Gesture::TextSelect => {
+                let index = self.text_index(at);
+                if let Some(t) = &mut self.text {
+                    t.buffer.set_caret(index, true);
+                }
+                Repaint::None
+            }
             Gesture::Freehand {
                 builder,
                 style,
@@ -932,7 +980,7 @@ impl Canvas {
                 self.rebuild_cache();
                 Repaint::Full
             }
-            Gesture::Marquee { .. } => Repaint::None,
+            Gesture::Marquee { .. } | Gesture::TextSelect => Repaint::None,
         }
     }
 
@@ -1076,7 +1124,13 @@ impl Canvas {
             .find(|a| a.kind() == AnnotationKind::Text && hit_test(a, at, 6.0))
             .map(|a| Annotation::clone(a));
         if let Some(hit) = hit {
-            return self.edit_text(&hit);
+            let r = self.edit_text(&hit);
+            let index = self.text_index(at);
+            if let Some(t) = &mut self.text {
+                t.buffer.set_caret(index, false);
+            }
+            self.gesture = Gesture::TextSelect;
+            return r;
         }
         // Put the click at the middle of the first line, where the caret appears.
         let font_size = state.font_size();
@@ -1086,7 +1140,10 @@ impl Canvas {
         );
         self.text = Some(TextEdit {
             origin,
-            string: String::new(),
+            buffer: TextBuffer::default(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing: false,
             font_size,
             style: state.text_style.clone(),
             color: state.color(),
@@ -1108,7 +1165,10 @@ impl Canvas {
         self.selection.clear();
         self.text = Some(TextEdit {
             origin: *origin,
-            string: string.clone(),
+            buffer: TextBuffer::new(string),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing: false,
             font_size: *font_size,
             style: style.clone(),
             color: a.style.color,
@@ -1123,7 +1183,7 @@ impl Canvas {
         Some(Annotation::new(
             Geometry::Text {
                 origin: t.origin,
-                string: t.string.clone(),
+                string: t.buffer.text().to_string(),
                 font_size: t.font_size,
                 style: t.style.clone(),
             },
@@ -1131,47 +1191,196 @@ impl Canvas {
         ))
     }
 
-    /// A thin bar after the last character.
-    fn caret(&self, a: &Annotation) -> Rect {
-        let Geometry::Text {
-            origin,
-            string,
-            font_size,
-            style,
-        } = &a.geometry
-        else {
-            return Rect::default();
-        };
-        let line_height = screenpen_core::text::line_height(*font_size);
-        let lines = string.split('\n').count().max(1);
-        let last = string.rsplit('\n').next().unwrap_or("");
-        // Glyph bounds ignore trailing spaces, so add roughly a space width for each.
-        let trailing = (last.len() - last.trim_end().len()) as f32 * font_size * 0.28;
-        let ink = screenpen_core::text::path_styled(last.trim_end(), *font_size, *origin, style)
-            .map_or(origin.x, |p| p.bounds().right() + 1.0);
-        let x = ink + trailing;
-        Rect::new(
-            x,
-            origin.y + (lines - 1) as f32 * line_height + line_height * 0.1,
-            2.0,
-            line_height * 0.85,
+    /// Where a char offset of the text being edited sits: x and the line's top.
+    fn text_position(t: &TextEdit, at: usize) -> Point {
+        let text = t.buffer.text();
+        let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+        let row = text[..line_start].matches('\n').count();
+        let stops =
+            screenpen_core::text::caret_stops(&text[line_start..line_end], t.font_size, &t.style);
+        let x = stops
+            .iter()
+            .rev()
+            .find(|(i, _)| *i <= at - line_start)
+            .map_or(0.0, |(_, x)| *x);
+        Point::new(
+            t.origin.x + x,
+            t.origin.y + row as f32 * screenpen_core::text::line_height(t.font_size),
         )
     }
 
-    /// Typed text while the text tool is active.
-    pub fn type_char(&mut self, c: char) -> Repaint {
-        let Some(t) = &mut self.text else {
-            return Repaint::None;
+    /// The char offset nearest to a point, in the text being edited.
+    fn text_index(&self, at: Point) -> usize {
+        let Some(t) = &self.text else {
+            return 0;
         };
-        match c {
-            '\u{8}' => {
-                t.string.pop();
+        let text = t.buffer.text();
+        let line_height = screenpen_core::text::line_height(t.font_size);
+        let row = ((at.y - t.origin.y) / line_height).floor().max(0.0) as usize;
+        let mut line_start = 0;
+        for _ in 0..row {
+            match text[line_start..].find('\n') {
+                Some(i) => line_start += i + 1,
+                None => break,
             }
-            '\r' | '\n' => t.string.push('\n'),
-            c if !c.is_control() => t.string.push(c),
-            _ => return Repaint::None,
         }
+        let line_end = text[line_start..]
+            .find('\n')
+            .map_or(text.len(), |i| line_start + i);
+        let stops =
+            screenpen_core::text::caret_stops(&text[line_start..line_end], t.font_size, &t.style);
+        let x = at.x - t.origin.x;
+        line_start
+            + stops
+                .iter()
+                .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()))
+                .map_or(0, |(i, _)| *i)
+    }
+
+    /// Whether a point is on the text being edited (with some slack around it).
+    fn on_text(&self, at: Point) -> bool {
+        let Some(a) = self.text_annotation() else {
+            return false;
+        };
+        let caret = self.caret(&a);
+        let b = bounds(&a).map_or(caret, |b| b.union(caret));
+        b.inset(-8.0).contains(at)
+    }
+
+    /// A thin bar at the caret.
+    fn caret(&self, a: &Annotation) -> Rect {
+        let Some(t) = &self.text else {
+            return Rect::default();
+        };
+        let line_height = screenpen_core::text::line_height(a_font_size(a));
+        let p = Self::text_position(t, t.buffer.caret());
+        Rect::new(p.x, p.y + line_height * 0.1, 2.0, line_height * 0.85)
+    }
+
+    /// Highlight boxes of the selection, one per line.
+    fn selection_rects(&self) -> Vec<Rect> {
+        let Some(t) = &self.text else {
+            return Vec::new();
+        };
+        let r = t.buffer.selection();
+        if r.is_empty() {
+            return Vec::new();
+        }
+        let text = t.buffer.text();
+        let line_height = screenpen_core::text::line_height(t.font_size);
+        let mut rects = Vec::new();
+        let mut start = r.start;
+        loop {
+            let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+            let end = line_end.min(r.end);
+            let a = Self::text_position(t, start);
+            let b = Self::text_position(t, end);
+            // A selected line break shows as a little extra width.
+            let extra = if end == line_end && end < r.end {
+                t.font_size * 0.3
+            } else {
+                0.0
+            };
+            rects.push(Rect::new(
+                a.x,
+                a.y,
+                (b.x - a.x + extra).max(1.0),
+                line_height,
+            ));
+            if end >= r.end {
+                break;
+            }
+            start = line_end + 1;
+        }
+        rects
+    }
+
+    /// Typed text while the text tool is active (control chars are keys, see `text_key`).
+    pub fn type_char(&mut self, c: char) -> Repaint {
+        // macOS reports function and arrow keys as private-use chars.
+        if c.is_control() || ('\u{F700}'..='\u{F8FF}').contains(&c) {
+            return Repaint::None;
+        }
+        self.text_change(true, |b| b.insert(c.encode_utf8(&mut [0; 4])));
         Repaint::None
+    }
+
+    /// Inserts clipboard text at the caret.
+    pub fn paste(&mut self, s: &str) -> Repaint {
+        self.text_change(false, |b| b.insert(s));
+        Repaint::None
+    }
+
+    /// Applies an edit, keeping the undo history; typed chars join one step.
+    fn text_change(&mut self, typing: bool, edit: impl FnOnce(&mut TextBuffer)) {
+        let Some(t) = &mut self.text else {
+            return;
+        };
+        let before = t.buffer.clone();
+        edit(&mut t.buffer);
+        if t.buffer.text() == before.text() {
+            return;
+        }
+        if !(typing && t.typing) {
+            t.undo.push(before);
+        }
+        t.typing = typing;
+        t.redo.clear();
+    }
+
+    /// Editing keys while typing: caret movement, selection, deletion, clipboard,
+    /// undo. None for keys that aren't about the text.
+    pub fn text_key(&mut self, chord: Chord) -> Option<TextKey> {
+        let t = self.text.as_mut()?;
+        let (word, extend) = (chord.ctrl, chord.shift);
+        let m = match chord.key {
+            Key::Left => Some(Motion::Left),
+            Key::Right => Some(Motion::Right),
+            Key::Up => Some(Motion::Up),
+            Key::Down => Some(Motion::Down),
+            Key::Home => Some(Motion::LineStart),
+            Key::End => Some(Motion::LineEnd),
+            _ => None,
+        };
+        if let Some(m) = m {
+            if chord.alt {
+                return None;
+            }
+            t.buffer.motion(m, word, extend);
+            t.typing = false;
+            return Some(TextKey::Handled(Repaint::None));
+        }
+        match chord.key {
+            Key::Backspace if !chord.alt => self.text_change(false, |b| b.backspace(word)),
+            Key::Delete if !chord.alt => self.text_change(false, |b| b.delete(word)),
+            // Ctrl+Enter finishes; Enter and Shift+Enter break the line.
+            Key::Enter if chord.ctrl => return Some(TextKey::Handled(self.end_text())),
+            Key::Enter if !chord.alt => self.text_change(false, |b| b.insert("\n")),
+            Key::Char(c) if chord.ctrl && !chord.alt => match c {
+                'A' => t.buffer.select_all(),
+                'C' => return t.buffer.selected().map(|s| TextKey::Copy(s.to_string())),
+                'X' => {
+                    let s = t.buffer.selected()?.to_string();
+                    self.text_change(false, |b| b.insert(""));
+                    return Some(TextKey::Copy(s));
+                }
+                'V' => return Some(TextKey::Paste),
+                'Z' if !chord.shift => {
+                    let before = t.undo.pop()?;
+                    t.redo.push(std::mem::replace(&mut t.buffer, before));
+                    t.typing = false;
+                }
+                'Y' | 'Z' => {
+                    let after = t.redo.pop()?;
+                    t.undo.push(std::mem::replace(&mut t.buffer, after));
+                    t.typing = false;
+                }
+                _ => return None,
+            },
+            _ => return None,
+        }
+        Some(TextKey::Handled(Repaint::None))
     }
 
     /// Commits the text being edited (or deletes it when emptied).
@@ -1179,7 +1388,7 @@ impl Canvas {
         let Some(t) = self.text.take() else {
             return Repaint::None;
         };
-        let string = t.string.trim().to_string();
+        let string = t.buffer.text().trim().to_string();
         let geometry = Geometry::Text {
             origin: t.origin,
             string: string.clone(),
@@ -1365,6 +1574,13 @@ impl Canvas {
     fn prune_selection(&mut self) {
         let ids: HashSet<_> = self.doc.annotations().iter().map(|a| a.id).collect();
         self.selection.retain(|id| ids.contains(id));
+    }
+}
+
+fn a_font_size(a: &Annotation) -> f32 {
+    match &a.geometry {
+        Geometry::Text { font_size, .. } => *font_size,
+        _ => 0.0,
     }
 }
 
@@ -1593,6 +1809,90 @@ mod tests {
         );
     }
 
+    fn key(ctrl: bool, shift: bool, key: Key) -> Chord {
+        Chord {
+            ctrl,
+            alt: false,
+            shift,
+            key,
+        }
+    }
+
+    fn typed(c: &Canvas) -> String {
+        c.text.as_ref().unwrap().buffer.text().to_string()
+    }
+
+    #[test]
+    fn text_edits_like_a_text_field() {
+        let mut c = canvas();
+        let state = ToolState {
+            tool: ToolKind::Text,
+            ..ToolState::default()
+        };
+        c.pointer_down(&state, at(50., 50.), Button::Left);
+        c.pointer_up(&state, at(50., 50.));
+        for ch in "one two".chars() {
+            c.type_char(ch);
+        }
+        // Ctrl+Shift+Left selects the last word, Ctrl+X cuts it.
+        c.text_key(key(true, true, Key::Left));
+        assert_eq!(
+            c.text_key(key(true, false, Key::Char('X'))),
+            Some(TextKey::Copy("two".into()))
+        );
+        assert_eq!(typed(&c), "one ");
+        // Home, then paste in front.
+        c.text_key(key(false, false, Key::Home));
+        c.paste("two ");
+        assert_eq!(typed(&c), "two one ");
+        // Ctrl+A, Ctrl+C copies all; typing replaces it.
+        c.text_key(key(true, false, Key::Char('A')));
+        assert_eq!(
+            c.text_key(key(true, false, Key::Char('C'))),
+            Some(TextKey::Copy("two one ".into()))
+        );
+        c.type_char('x');
+        assert_eq!(typed(&c), "x");
+        // Undo steps back through the replace and the paste.
+        c.text_key(key(true, false, Key::Char('Z')));
+        assert_eq!(typed(&c), "two one ");
+        c.text_key(key(true, false, Key::Char('Z')));
+        assert_eq!(typed(&c), "one ");
+        c.text_key(key(true, false, Key::Char('Y')));
+        assert_eq!(typed(&c), "two one ");
+        // Keys that aren't about text fall through.
+        assert_eq!(c.text_key(key(false, false, Key::F(5))), None);
+        // Ctrl+Enter finishes.
+        c.text_key(key(true, false, Key::Enter));
+        assert!(!c.is_typing());
+    }
+
+    #[test]
+    fn clicking_in_the_text_moves_the_caret() {
+        let mut c = canvas();
+        let state = ToolState {
+            tool: ToolKind::Text,
+            ..ToolState::default()
+        };
+        c.pointer_down(&state, at(50., 50.), Button::Left);
+        c.pointer_up(&state, at(50., 50.));
+        for ch in "hello".chars() {
+            c.type_char(ch);
+        }
+        let origin = c.text.as_ref().unwrap().origin;
+        // A click left of the first glyph puts the caret at the start and keeps editing
+        // (pointers are in pixels, the scale is 2).
+        let start = at((origin.x + 1.0) * 2.0, (origin.y + 5.0) * 2.0);
+        c.pointer_down(&state, start, Button::Left);
+        c.pointer_up(&state, start);
+        assert!(c.is_typing());
+        assert_eq!(c.text.as_ref().unwrap().buffer.caret(), 0);
+        // A click far away commits it.
+        c.pointer_down(&state, at(400., 400.), Button::Left);
+        assert!(!c.is_typing());
+        assert_eq!(c.doc.annotations().len(), 1);
+    }
+
     #[test]
     fn typing_commits_text_on_escape() {
         let mut c = canvas();
@@ -1602,9 +1902,10 @@ mod tests {
         };
         c.pointer_down(&state, at(50., 50.), Button::Left);
         c.pointer_up(&state, at(50., 50.));
-        for ch in "Hi!\u{8}".chars() {
+        for ch in "Hi!".chars() {
             c.type_char(ch);
         }
+        c.text_key(key(false, false, Key::Backspace));
         assert!(c.is_typing());
         c.perform(&mut state, Action::Escape);
         assert!(!c.is_typing());

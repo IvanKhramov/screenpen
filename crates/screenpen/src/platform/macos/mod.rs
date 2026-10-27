@@ -1160,6 +1160,12 @@ fn on_key(app: &mut App, index: usize, event: &NSEvent) {
         return;
     }
     if app.overlays[index].canvas.is_typing() {
+        let o = &mut app.overlays[index];
+        let edit = chord.map(|c| keys::edit_chord(event, c));
+        if let Some(r) = edit.and_then(|c| crate::clipboard::text_key(&mut o.canvas, c)) {
+            paint(o, r);
+            return;
+        }
         if let Some(action) = chord.and_then(|c| typing_action(&app.state.shortcuts, c)) {
             run_action(app, index, action);
             return;
@@ -1175,8 +1181,6 @@ fn on_key(app: &mut App, index: usize, event: &NSEvent) {
             .unwrap_or_default();
         let o = &mut app.overlays[index];
         for c in text.chars() {
-            // Backspace arrives as DEL; the canvas expects BS like Windows sends.
-            let c = if c == '\u{7f}' { '\u{8}' } else { c };
             let r = o.canvas.type_char(c);
             paint(o, r);
         }

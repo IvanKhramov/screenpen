@@ -6,6 +6,8 @@
     allow(dead_code)
 )]
 mod canvas;
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+mod clipboard;
 #[cfg_attr(
     not(any(windows, target_os = "macos", target_os = "linux")),
     allow(dead_code)

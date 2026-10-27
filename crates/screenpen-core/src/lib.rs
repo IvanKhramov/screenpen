@@ -12,6 +12,7 @@ pub mod shortcuts;
 pub mod stroke;
 pub mod style;
 pub mod text;
+pub mod text_edit;
 pub mod tools;
 
 pub use annotation::{Annotation, AnnotationId, AnnotationKind, BadgeFormat, Geometry, TextStyle};

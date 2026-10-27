@@ -1028,14 +1028,18 @@ fn on_key(app: &mut App, win: Option<Win>, key: Option<Key>, mods: Mods, text: O
         return;
     }
     if app.overlays[index].canvas.is_typing() {
+        let o = &mut app.overlays[index];
+        if let Some(r) = chord.and_then(|c| crate::clipboard::text_key(&mut o.canvas, c)) {
+            paint(app.display.as_mut(), index, o, r);
+            return;
+        }
         if let Some(action) = chord.and_then(|c| typing_action(&app.state.shortcuts, c)) {
             return run_action(app, index, action);
         }
         // While typing, letters are text; only Esc (finish) is a shortcut.
         let typed = match key {
             Some(Key::Escape) => return run_action(app, index, Action::Escape),
-            Some(Key::Enter) => Some('\r'),
-            Some(Key::Backspace) => Some('\u{8}'),
+            _ if mods.ctrl && !mods.alt => None,
             _ => text,
         };
         if let Some(c) = typed {

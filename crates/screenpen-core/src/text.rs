@@ -61,6 +61,49 @@ pub fn families() -> Vec<String> {
     names
 }
 
+fn attrs(style: &TextStyle) -> Attrs<'_> {
+    Attrs::new()
+        .family(match style.family.as_deref() {
+            Some(name) => Family::Name(name),
+            None => family(),
+        })
+        .weight(if style.bold {
+            Weight::BOLD
+        } else {
+            Weight::NORMAL
+        })
+        .style(if style.italic {
+            Style::Italic
+        } else {
+            Style::Normal
+        })
+}
+
+/// Caret positions in one line: (byte offset, x from the line start), ascending by
+/// offset, from 0 to `line.len()` (offsets inside a ligature are missing).
+pub fn caret_stops(line: &str, font_size: f32, style: &TextStyle) -> Vec<(usize, f32)> {
+    let mut guard = fonts().lock().unwrap_or_else(|e| e.into_inner());
+    let system = &mut guard.system;
+    let mut buffer = Buffer::new(system, Metrics::new(font_size, line_height(font_size)));
+    let mut buffer = buffer.borrow_with(system);
+    buffer.set_size(None, None);
+    buffer.set_text(line, &attrs(style), Shaping::Advanced, None);
+    let mut stops = vec![(0, 0.0)];
+    let mut end = 0.0f32;
+    for run in buffer.layout_runs() {
+        for glyph in run.glyphs {
+            stops.push((glyph.start, glyph.x));
+            stops.push((glyph.end, glyph.x + glyph.w));
+            end = end.max(glyph.x + glyph.w);
+        }
+        end = end.max(run.line_w);
+    }
+    stops.push((line.len(), end));
+    stops.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    stops.dedup_by_key(|s| s.0);
+    stops
+}
+
 /// Like `path`, in the given family, weight and slant (falling back to the
 /// default family when that one isn't installed).
 pub fn path_styled(string: &str, font_size: f32, origin: Point, style: &TextStyle) -> Option<Path> {
@@ -71,26 +114,7 @@ pub fn path_styled(string: &str, font_size: f32, origin: Point, style: &TextStyl
     {
         let mut buffer = Buffer::new(system, Metrics::new(font_size, line_height(font_size)));
         let mut buffer = buffer.borrow_with(system);
-        buffer.set_text(
-            string,
-            &Attrs::new()
-                .family(match style.family.as_deref() {
-                    Some(name) => Family::Name(name),
-                    None => family(),
-                })
-                .weight(if style.bold {
-                    Weight::BOLD
-                } else {
-                    Weight::NORMAL
-                })
-                .style(if style.italic {
-                    Style::Italic
-                } else {
-                    Style::Normal
-                }),
-            Shaping::Advanced,
-            None,
-        );
+        buffer.set_text(string, &attrs(style), Shaping::Advanced, None);
         for run in buffer.layout_runs() {
             for glyph in run.glyphs {
                 let key = glyph.physical((0.0, 0.0), 1.0).cache_key;

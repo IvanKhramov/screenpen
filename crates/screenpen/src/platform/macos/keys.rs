@@ -149,6 +149,39 @@ pub fn chord(event: &NSEvent) -> Option<Chord> {
     })
 }
 
+/// Mac editing habits mapped onto the Ctrl-based ones the canvas knows:
+/// Cmd+letter is Ctrl+letter, Option+arrow or Option+Backspace work by words,
+/// Cmd+Left/Right go to the line ends, Cmd+Up/Down to the text ends.
+pub fn edit_chord(event: &NSEvent, mut c: Chord) -> Chord {
+    let flags = event.modifierFlags();
+    let cmd = flags.contains(NSEventModifierFlags::Command);
+    match c.key {
+        Key::Left | Key::Right if cmd => {
+            c.key = if c.key == Key::Left {
+                Key::Home
+            } else {
+                Key::End
+            };
+            c.ctrl = false;
+        }
+        Key::Up | Key::Down if cmd => {
+            c.key = if c.key == Key::Up {
+                Key::Home
+            } else {
+                Key::End
+            };
+            c.ctrl = true;
+        }
+        Key::Left | Key::Right | Key::Backspace | Key::Delete if c.alt => {
+            c.ctrl = true;
+            c.alt = false;
+        }
+        Key::Char(_) | Key::Enter if cmd => c.ctrl = true,
+        _ => {}
+    }
+    c
+}
+
 /// Carbon modifier mask (`controlKey`, `optionKey`, `shiftKey`) for a global hotkey.
 pub fn carbon_modifiers(chord: Chord) -> u32 {
     const SHIFT: u32 = 0x0200;

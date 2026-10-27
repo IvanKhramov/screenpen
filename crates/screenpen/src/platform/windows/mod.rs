@@ -1277,6 +1277,11 @@ fn on_key(app: &mut App, index: usize, vk: u16) {
         return;
     }
     if typing {
+        let o = &mut app.overlays[index];
+        if let Some(r) = crate::clipboard::text_key(&mut o.canvas, chord) {
+            paint(o, r);
+            return;
+        }
         if let Some(action) = typing_action(&app.state.shortcuts, chord) {
             run_action(app, index, action);
             return;
