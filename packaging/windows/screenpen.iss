@@ -62,7 +62,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
   ValueName: "screenpen"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
-Filename: "{app}\screenpen.exe"; Description: "{cm:LaunchProgram,screenpen}"; Flags: nowait postinstall
+Filename: "{app}\screenpen.exe"; Description: "{cm:LaunchProgram,screenpen}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{app}\screenpen.exe"; Parameters: "--quit"; Flags: runhidden waituntilterminated; RunOnceId: "QuitScreenpen"

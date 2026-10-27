@@ -275,3 +275,8 @@ Linux: `install.sh` в архиве. Релиз v0.1.0-alpha.15.
 оплатить. Варианты (разбор в `~/Work/screenpen-research/signing.md`): winget (установка без
 SmartScreen), SignPath Foundation (бесплатно для OSS, издатель "SignPath Foundation"),
 Microsoft Store (регистрация физлица бесплатная, доступность для РФ не подтверждена).
+
+2026-10-27: решено ставить через winget (без подписи, SmartScreen не спрашивает), Mac
+оставить с ad-hoc подписью. `scripts/winget-manifest.sh <tag>` пишет манифесты
+IvanKhramov.screenpen под релиз. PR в microsoft/winget-pkgs отправить с первой стабильной
+версией после ручной проверки, не с альфой.
