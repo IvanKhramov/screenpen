@@ -1314,6 +1314,65 @@ pub fn render_item_icon(item: Item, look: &Look, scale: f32) -> Option<Pixmap> {
     Some(pixmap)
 }
 
+/// A cursor that shows the brush: a dot as wide as the stroke, in its color, ringed
+/// light and dark so it shows on any background. Returns the image (straight RGBA
+/// order as `order` says) and its hot spot; None for tools that keep a system cursor.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub fn render_cursor(
+    tool: ToolKind,
+    style: &screenpen_core::Style,
+    scale: f32,
+    order: ChannelOrder,
+) -> Option<(Pixmap, (u32, u32))> {
+    if !matches!(
+        tool,
+        ToolKind::Pen
+            | ToolKind::Highlighter
+            | ToolKind::Line
+            | ToolKind::Arrow
+            | ToolKind::Rectangle
+            | ToolKind::Ellipse
+    ) {
+        return None;
+    }
+    let radius = (style.width * scale / 2.0).clamp(2.5, 60.0);
+    let size = (2.0 * radius + 6.0).ceil() as u32;
+    let mut pixmap = Pixmap::new(size, size)?;
+    let c = size as f32 / 2.0;
+    let mut target = pixmap.as_mut();
+    let t = Transform::identity();
+    let opacity = if tool == ToolKind::Highlighter {
+        0.55
+    } else {
+        1.0
+    };
+    fill(
+        &mut target,
+        PathBuilder::from_circle(c, c, radius),
+        style.color.with_alpha(opacity),
+        t,
+        order,
+    );
+    stroke(
+        &mut target,
+        PathBuilder::from_circle(c, c, radius + 0.75),
+        Rgba::WHITE.with_alpha(0.95),
+        1.5,
+        t,
+        order,
+    );
+    stroke(
+        &mut target,
+        PathBuilder::from_circle(c, c, radius + 2.0),
+        Rgba::BLACK.with_alpha(0.55),
+        1.0,
+        t,
+        order,
+    );
+    let hot = size / 2;
+    Some((pixmap, (hot, hot)))
+}
+
 /// `source` (the screen around the pointer) enlarged into a round lens `diameter`
 /// pixels wide, with a thin ring. Byte order follows `source`. Used by the macOS
 /// backend; Windows has the system Magnification API, Linux has no magnifier.
@@ -1861,6 +1920,20 @@ mod tests {
                 .unwrap();
             sheet.save_png(format!("{dir}/cheatsheet.png")).unwrap();
         }
+    }
+
+    #[test]
+    fn brush_cursor_is_as_wide_as_the_stroke() {
+        let style = screenpen_core::Style::new(Rgba::RED, 8.0);
+        let (small, hot) = render_cursor(ToolKind::Pen, &style, 1.0, ChannelOrder::Rgba).unwrap();
+        let (big, _) = render_cursor(ToolKind::Pen, &style, 2.0, ChannelOrder::Rgba).unwrap();
+        assert!(big.width() > small.width());
+        let middle = small.pixel(hot.0, hot.1).unwrap();
+        assert!(
+            middle.red() > 200 && middle.green() < 100,
+            "the dot has the color"
+        );
+        assert!(render_cursor(ToolKind::Text, &style, 1.0, ChannelOrder::Rgba).is_none());
     }
 
     #[test]

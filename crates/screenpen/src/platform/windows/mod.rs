@@ -5,6 +5,7 @@
 
 mod autostart;
 mod capture;
+mod cursor;
 mod instance;
 mod keys;
 mod magnifier;
@@ -90,6 +91,7 @@ struct Overlay {
 
 struct App {
     overlays: Vec<Overlay>,
+    brush_cursor: cursor::BrushCursor,
     state: ToolState,
     palette: ui::PaletteWindow,
     /// Whether the palette has a position (from settings or a drag) to save.
@@ -163,6 +165,7 @@ pub fn run() {
         tray: Tray::new(tray_hwnd),
         tray_hwnd,
         taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
+        brush_cursor: cursor::BrushCursor::default(),
     };
     APP.with(|cell| *cell.borrow_mut() = Some(app));
     with_app(|app| {
@@ -1266,6 +1269,15 @@ fn run_action(app: &mut App, index: usize, action: Action) {
         Some(Request::ToggleMagnifier) => toggle_magnifier(app),
         Some(Request::Snapshot) => snapshot(app, index),
         Some(Request::StateChanged) => {
+            // Show the new color or width at once, not on the next mouse move.
+            let mut at = POINT { x: 0, y: 0 };
+            unsafe { GetCursorPos(&mut at) };
+            if app.active
+                && !app.ghost
+                && let Some(i) = app.overlays.iter().position(|o| contains(o.monitor, at))
+            {
+                set_cursor(app, i);
+            }
             // Tool, color or width changed: other screens drop their gestures.
             for (i, o) in app.overlays.iter_mut().enumerate() {
                 if i != index {
@@ -1277,6 +1289,22 @@ fn run_action(app: &mut App, index: usize, action: Action) {
             save_settings(app);
         }
     }
+}
+
+/// The cursor over a drawing screen: the brush for drawing tools, else a system one.
+fn set_cursor(app: &mut App, index: usize) {
+    let scale = app.overlays[index].canvas.scale();
+    let tool = app.state.tool;
+    let brush = app.brush_cursor.get(tool, &app.state.style(tool), scale);
+    let cursor = brush.unwrap_or_else(|| {
+        let id = match tool {
+            ToolKind::Select => IDC_ARROW,
+            ToolKind::Text => IDC_IBEAM,
+            _ => IDC_CROSS,
+        };
+        unsafe { LoadCursorW(null_mut(), id) }
+    });
+    unsafe { SetCursor(cursor) };
 }
 
 fn on_key(app: &mut App, index: usize, vk: u16) {
@@ -1553,13 +1581,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
         }),
         WM_SETCURSOR => with_app(|app| {
-            if app.overlays.iter().any(|o| o.hwnd == hwnd) {
-                let cursor = match app.state.tool {
-                    ToolKind::Select => IDC_ARROW,
-                    ToolKind::Text => IDC_IBEAM,
-                    _ => IDC_CROSS,
-                };
-                unsafe { SetCursor(LoadCursorW(null_mut(), cursor)) };
+            if let Some(index) = app.overlays.iter().position(|o| o.hwnd == hwnd) {
+                set_cursor(app, index);
                 handled = Some(1);
             }
         }),

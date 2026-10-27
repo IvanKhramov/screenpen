@@ -7,6 +7,7 @@
 
 mod autostart;
 mod capture;
+mod cursor;
 mod hotkey;
 mod instance;
 mod keys;
@@ -125,6 +126,7 @@ struct Overlay {
 
 struct App {
     mtm: MainThreadMarker,
+    brush_cursor: cursor::BrushCursor,
     overlays: Vec<Overlay>,
     state: ToolState,
     palette: ui::PaletteWindow,
@@ -214,6 +216,7 @@ pub fn run() {
         fade_timer: None,
         settings_window: None,
         _lock: lock,
+        brush_cursor: cursor::BrushCursor::default(),
     };
     APP.with(|cell| *cell.borrow_mut() = Some(app));
     with_app(|app| {
@@ -1342,7 +1345,7 @@ fn on_pointer(app: &mut App, index: usize, input: Input, event: &NSEvent) {
         if app.palette.palette.hover.is_some() || app.palette.grip_hover {
             clear_palette_hover(app);
         }
-        set_cursor(app.state.tool);
+        set_cursor(app, index);
     }
     let o = &app.overlays[index];
     let at = o.view.convertPoint_fromView(event.locationInWindow(), None);
@@ -1397,12 +1400,18 @@ fn track_pen(app: &mut App, event: &NSEvent) {
         event.isEnteringProximity() && event.pointingDeviceType() == NSPointingDeviceType::Eraser;
 }
 
-fn set_cursor(tool: ToolKind) {
-    let cursor = match tool {
-        ToolKind::Select => NSCursor::arrowCursor(),
-        ToolKind::Text => NSCursor::IBeamCursor(),
-        _ => NSCursor::crosshairCursor(),
-    };
+/// The cursor over a drawing screen: the brush for drawing tools, else a system one.
+fn set_cursor(app: &mut App, index: usize) {
+    let tool = app.state.tool;
+    let scale = app.overlays[index].canvas.scale();
+    let cursor = app
+        .brush_cursor
+        .get(tool, &app.state.style(tool), scale)
+        .unwrap_or_else(|| match tool {
+            ToolKind::Select => NSCursor::arrowCursor(),
+            ToolKind::Text => NSCursor::IBeamCursor(),
+            _ => NSCursor::crosshairCursor(),
+        });
     cursor.set();
 }
 
