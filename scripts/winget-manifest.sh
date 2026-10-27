@@ -9,7 +9,7 @@ out=${2:-target/winget/$version}
 repo=https://github.com/IvanKhramov/screenpen
 url="$repo/releases/download/$tag/screenpen-$tag-windows-x64-setup.exe"
 id=IvanKhramov.screenpen
-schema=1.10.0
+schema=1.12.0
 
 sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1 | tr a-f A-F)
 mkdir -p "$out"
