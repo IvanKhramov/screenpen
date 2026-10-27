@@ -9,9 +9,10 @@ use screenpen_core::{Action, Chord, Key, Rgba, Shortcuts, TextStyle};
 
 use crate::config::{Settings, default_path, parse_hex};
 use crate::i18n::Lang;
-use crate::palette::{Item, chord_label};
+use crate::palette::{Item, Look, Palette, Theme, chord_label, render_item_icon};
 use crate::snapshots;
 use crate::state::{DIM_LEVELS, FADE_SECONDS, ToolState, UI_SCALE, step_ui_scale};
+use screenpen_core::render::ChannelOrder;
 
 pub const TITLE: &str = "screenpen settings";
 
@@ -19,7 +20,7 @@ pub fn run() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
-            .with_inner_size([860.0, 700.0])
+            .with_inner_size([900.0, 700.0])
             .with_min_inner_size([560.0, 420.0]),
         ..Default::default()
     };
@@ -27,10 +28,70 @@ pub fn run() {
     if let Err(e) = eframe::run_native(
         TITLE,
         options,
-        Box::new(move |_| Ok(Box::new(SettingsApp::load(path)))),
+        Box::new(move |cc| {
+            install_style(&cc.egui_ctx);
+            Ok(Box::new(SettingsApp::load(path)))
+        }),
     ) {
         eprintln!("screenpen settings: {e}");
     }
+}
+
+const ACCENT: Color32 = Color32::from_rgb(10, 132, 255);
+
+/// Rounder, airier widgets with the palette's blue, in both themes.
+fn install_style(ctx: &egui::Context) {
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, |s| {
+            s.spacing.item_spacing = egui::vec2(10.0, 9.0);
+            s.spacing.button_padding = egui::vec2(10.0, 4.0);
+            s.spacing.interact_size.y = 24.0;
+            let v = &mut s.visuals;
+            v.selection.bg_fill = ACCENT;
+            v.selection.stroke.color = Color32::WHITE;
+            v.hyperlink_color = ACCENT;
+            for w in [
+                &mut v.widgets.noninteractive,
+                &mut v.widgets.inactive,
+                &mut v.widgets.hovered,
+                &mut v.widgets.active,
+                &mut v.widgets.open,
+            ] {
+                w.corner_radius = 7.into();
+            }
+            if theme == egui::Theme::Dark {
+                v.panel_fill = Color32::from_rgb(30, 30, 33);
+                v.window_fill = Color32::from_rgb(30, 30, 33);
+                v.faint_bg_color = Color32::from_rgb(38, 38, 42);
+                v.extreme_bg_color = Color32::from_rgb(22, 22, 24);
+            } else {
+                v.panel_fill = Color32::from_rgb(244, 244, 246);
+                v.window_fill = Color32::from_rgb(244, 244, 246);
+                v.faint_bg_color = Color32::WHITE;
+                v.extreme_bg_color = Color32::WHITE;
+            }
+        });
+    }
+}
+
+/// A titled block with a soft background, full width.
+fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let v = ui.visuals();
+    egui::Frame::new()
+        .fill(v.faint_bg_color)
+        .stroke(egui::Stroke::new(
+            1.0,
+            v.widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(12)
+        .inner_margin(16)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(title).strong().size(15.0));
+            ui.add_space(4.0);
+            add(ui);
+        });
+    ui.add_space(12.0);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -58,6 +119,9 @@ struct SettingsApp {
     font_filter: String,
     /// The text preview and what it was rendered for.
     preview: Option<(String, egui::TextureHandle)>,
+    /// The palette preview and palette icons, with what they were rendered for.
+    palette_preview: Option<(String, egui::TextureHandle)>,
+    icons: Option<(String, Vec<egui::TextureHandle>)>,
     /// Snapshot list (re-read every couple of seconds) and thumbnails by file stem.
     gallery: Option<(std::time::Instant, Vec<snapshots::Entry>)>,
     thumbnails: std::collections::HashMap<String, Option<egui::TextureHandle>>,
@@ -80,6 +144,8 @@ struct Edited {
     text_size: f32,
     text_style: TextStyle,
     ui_scale: f32,
+    theme: String,
+    key_badges: bool,
 }
 
 fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
@@ -111,6 +177,8 @@ impl SettingsApp {
             families: None,
             font_filter: String::new(),
             preview: None,
+            palette_preview: None,
+            icons: None,
             gallery: None,
             thumbnails: std::collections::HashMap::new(),
             checked: std::time::Instant::now(),
@@ -136,6 +204,8 @@ impl SettingsApp {
             text_size: self.state.text_size,
             text_style: self.state.text_style.clone(),
             ui_scale: self.state.ui_scale,
+            theme: self.state.theme.clone(),
+            key_badges: self.state.key_badges,
         }
     }
 
@@ -189,6 +259,12 @@ impl SettingsApp {
         }
         if now.ui_scale != before.ui_scale {
             state.ui_scale = now.ui_scale;
+        }
+        if now.theme != before.theme {
+            state.theme = now.theme.clone();
+        }
+        if now.key_badges != before.key_badges {
+            state.key_badges = now.key_badges;
         }
         let settings = Settings::capture(
             &state,
@@ -247,37 +323,66 @@ impl SettingsApp {
         if self.recording.is_some() {
             self.record_chord(ui);
         }
-        egui::Panel::top("tabs").show(ui, |ui| {
-            ui.horizontal(|ui| {
+        let theme = match self.state.theme.as_str() {
+            "light" => egui::ThemePreference::Light,
+            "dark" => egui::ThemePreference::Dark,
+            _ => egui::ThemePreference::System,
+        };
+        if ui.ctx().options(|o| o.theme_preference) != theme {
+            ui.ctx().set_theme(theme);
+        }
+        egui::Panel::left("sections")
+            .exact_size(190.0)
+            .resizable(false)
+            .show(ui, |ui| {
+                ui.add_space(14.0);
+                ui.label(RichText::new("screenpen").strong().size(20.0));
+                ui.label(RichText::new(tr(lang, "Settings", "Настройки")).weak());
+                ui.add_space(14.0);
                 for (tab, en, ru) in [
                     (Tab::General, "General", "Общие"),
+                    (Tab::Palette, "Palette", "Палитра"),
                     (Tab::Text, "Text", "Текст"),
                     (Tab::Shortcuts, "Shortcuts", "Горячие клавиши"),
-                    (Tab::Palette, "Palette", "Палитра"),
                     (Tab::Snapshots, "Snapshots", "Снимки"),
                 ] {
-                    if ui
-                        .selectable_label(self.tab == tab, tr(lang, en, ru))
-                        .clicked()
-                    {
+                    let selected = self.tab == tab;
+                    let text = RichText::new(tr(lang, en, ru)).size(14.5);
+                    let button = egui::Button::selectable(selected, text)
+                        .min_size(egui::vec2(ui.available_width(), 32.0));
+                    if ui.add(button).clicked() {
                         self.tab = tab;
                         self.recording = None;
                     }
                 }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(match option_env!("SCREENPEN_VERSION") {
+                            Some(v) => v.to_string(),
+                            None => format!("v{}-dev", env!("CARGO_PKG_VERSION")),
+                        })
+                        .weak()
+                        .small(),
+                    );
+                });
             });
-        });
         if let Some(status) = &self.status {
             egui::Panel::bottom("status").show(ui, |ui| {
                 ui.colored_label(Color32::from_rgb(0xff, 0x9f, 0x0a), status);
             });
         }
         egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
-                Tab::General => self.general(ui, lang),
-                Tab::Text => self.text(ui, lang),
-                Tab::Shortcuts => self.shortcuts(ui, lang),
-                Tab::Palette => self.palette(ui, lang),
-                Tab::Snapshots => self.snapshots(ui, lang),
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| match self.tab {
+                        Tab::General => self.general(ui, lang),
+                        Tab::Text => self.text(ui, lang),
+                        Tab::Shortcuts => self.shortcuts(ui, lang),
+                        Tab::Palette => self.palette(ui, lang),
+                        Tab::Snapshots => self.snapshots(ui, lang),
+                    });
             });
         });
     }
@@ -326,12 +431,16 @@ impl SettingsApp {
 
 impl SettingsApp {
     fn general(&mut self, ui: &mut egui::Ui, lang: Lang) {
-        let mut changed = false;
-        egui::Grid::new("general")
-            .num_columns(2)
-            .spacing([24.0, 12.0])
-            .show(ui, |ui| {
-                ui.label(tr(lang, "Language", "Язык"));
+        let row = |ui: &mut egui::Ui, label: &str| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(210.0, 24.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| ui.label(label),
+            );
+        };
+        card(ui, tr(lang, "Look", "Внешний вид"), |ui| {
+            egui::Grid::new("look").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+                row(ui, tr(lang, "Language", "Язык"));
                 egui::ComboBox::from_id_salt("language")
                     .selected_text(match self.settings.language.as_str() {
                         "en" => "English",
@@ -349,98 +458,38 @@ impl SettingsApp {
                                 .clicked()
                             {
                                 self.settings.language = value.to_string();
-                                changed = true;
                             }
                         }
                     });
                 ui.end_row();
 
-                ui.label(tr(lang, "Colors (keys 1-9)", "Цвета (клавиши 1-9)"));
-                ui.horizontal_wrapped(|ui| {
-                    for color in self.state.colors.iter_mut() {
-                        let mut rgb = to_rgb(*color);
-                        if ui.color_edit_button_srgb(&mut rgb).changed() {
-                            *color = from_rgb(rgb);
-                            changed = true;
-                        }
-                    }
-                    if ui.small_button(tr(lang, "Reset", "Сбросить")).clicked() {
-                        self.state.colors = Rgba::PALETTE;
-                        changed = true;
-                    }
-                });
-                ui.end_row();
-
-                ui.label(tr(lang, "Line width", "Толщина линии"));
-                changed |= ui
-                    .add(egui::Slider::new(&mut self.state.width, 1.0..=32.0).step_by(1.0))
-                    .changed();
-                ui.end_row();
-
-                ui.label(tr(
-                    lang,
-                    "Dim the screen while drawing",
-                    "Затемнять экран при рисовании",
-                ));
+                row(ui, tr(lang, "Theme", "Тема"));
                 ui.horizontal(|ui| {
-                    let names = [
-                        tr(lang, "Off", "Нет"),
-                        tr(lang, "Slightly", "Слегка"),
-                        tr(lang, "Medium", "Средне"),
-                        tr(lang, "Strongly", "Сильно"),
-                    ];
-                    for ((level, _), name) in DIM_LEVELS.iter().zip(names) {
-                        if ui.radio(self.state.dim == *level, name).clicked() {
-                            self.state.dim = *level;
-                            changed = true;
-                        }
-                    }
-                });
-                ui.end_row();
-
-                ui.label(tr(lang, "Fade drawings", "Растворять рисунки"));
-                ui.horizontal(|ui| {
-                    if ui
-                        .radio(self.state.auto_fade.is_none(), tr(lang, "Off", "Нет"))
-                        .clicked()
-                    {
-                        self.state.auto_fade = None;
-                        changed = true;
-                    }
-                    for seconds in FADE_SECONDS {
-                        let label = format!("{seconds} {}", tr(lang, "s", "с"));
+                    for (value, en, ru) in [
+                        ("system", "System", "Как в системе"),
+                        ("dark", "Dark", "Тёмная"),
+                        ("light", "Light", "Светлая"),
+                    ] {
                         if ui
-                            .radio(self.state.auto_fade == Some(seconds), label)
+                            .selectable_label(self.state.theme == value, tr(lang, en, ru))
                             .clicked()
                         {
-                            self.state.auto_fade = Some(seconds);
-                            changed = true;
+                            self.state.theme = value.to_string();
                         }
                     }
                 });
                 ui.end_row();
 
-                ui.label(tr(lang, "Screen sharing", "Демонстрация экрана"));
-                changed |= ui
-                    .checkbox(
-                        &mut self.settings.hide_palette_from_capture,
-                        tr(
-                            lang,
-                            "Hide the palette from viewers",
-                            "Прятать палитру от зрителей",
-                        ),
-                    )
-                    .changed();
-                ui.end_row();
-
-                ui.label(tr(lang, "Interface scale", "Масштаб интерфейса"));
+                row(ui, tr(lang, "Interface scale", "Масштаб интерфейса"));
                 ui.horizontal(|ui| {
                     let (min, max, _) = UI_SCALE;
                     if ui.small_button("−").clicked() {
                         self.state.ui_scale = step_ui_scale(self.state.ui_scale, false);
                     }
                     let mut percent = (self.state.ui_scale * 100.0).round();
-                    let slider = egui::Slider::new(&mut percent, min * 100.0..=max * 100.0).step_by(5.0).suffix("%");
+                    let slider = egui::Slider::new(&mut percent, min * 100.0..=max * 100.0)
+                        .step_by(5.0)
+                        .suffix("%");
                     if ui.add(slider).changed() {
                         self.state.ui_scale = percent / 100.0;
                     }
@@ -455,12 +504,105 @@ impl SettingsApp {
                     "Палитра, подсказки, шпаргалка и это окно. Ещё меняется Ctrl+колесом над палитрой.",
                 ));
                 ui.end_row();
+
+                row(ui, tr(lang, "Palette buttons", "Кнопки палитры"));
+                ui.checkbox(
+                    &mut self.state.key_badges,
+                    tr(lang, "Show their keys in the corner", "Показывать клавишу в углу"),
+                );
+                ui.end_row();
             });
-        ui.add_space(16.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(self.path.display().to_string()).weak());
         });
-        if changed {}
+
+        card(ui, tr(lang, "Drawing", "Рисование"), |ui| {
+            egui::Grid::new("drawing")
+                .num_columns(2)
+                .spacing([16.0, 10.0])
+                .show(ui, |ui| {
+                    row(ui, tr(lang, "Colors (keys 1-9)", "Цвета (клавиши 1-9)"));
+                    ui.horizontal_wrapped(|ui| {
+                        for color in self.state.colors.iter_mut() {
+                            let mut rgb = to_rgb(*color);
+                            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                *color = from_rgb(rgb);
+                            }
+                        }
+                        if ui.small_button(tr(lang, "Reset", "Сбросить")).clicked() {
+                            self.state.colors = Rgba::PALETTE;
+                        }
+                    });
+                    ui.end_row();
+
+                    row(ui, tr(lang, "Line width", "Толщина линии"));
+                    ui.add(egui::Slider::new(&mut self.state.width, 1.0..=32.0).step_by(1.0));
+                    ui.end_row();
+
+                    row(ui, tr(lang, "Dim the screen", "Затемнять экран"));
+                    ui.horizontal(|ui| {
+                        let names = [
+                            tr(lang, "Off", "Нет"),
+                            tr(lang, "Slightly", "Слегка"),
+                            tr(lang, "Medium", "Средне"),
+                            tr(lang, "Strongly", "Сильно"),
+                        ];
+                        for ((level, _), name) in DIM_LEVELS.iter().zip(names) {
+                            if ui
+                                .selectable_label(self.state.dim == *level, name)
+                                .clicked()
+                            {
+                                self.state.dim = *level;
+                            }
+                        }
+                    });
+                    ui.end_row();
+
+                    row(
+                        ui,
+                        tr(lang, "Fade drawings after", "Растворять рисунки через"),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(
+                                self.state.auto_fade.is_none(),
+                                tr(lang, "Never", "Никогда"),
+                            )
+                            .clicked()
+                        {
+                            self.state.auto_fade = None;
+                        }
+                        for seconds in FADE_SECONDS {
+                            let label = format!("{seconds} {}", tr(lang, "s", "с"));
+                            if ui
+                                .selectable_label(self.state.auto_fade == Some(seconds), label)
+                                .clicked()
+                            {
+                                self.state.auto_fade = Some(seconds);
+                            }
+                        }
+                    });
+                    ui.end_row();
+                });
+        });
+
+        card(
+            ui,
+            tr(lang, "Screen sharing", "Демонстрация экрана"),
+            |ui| {
+                ui.checkbox(
+                    &mut self.settings.hide_palette_from_capture,
+                    tr(
+                        lang,
+                        "Hide the palette from viewers (they see only the drawing)",
+                        "Прятать палитру от зрителей (они видят только рисунок)",
+                    ),
+                );
+            },
+        );
+        ui.label(
+            RichText::new(self.path.display().to_string())
+                .weak()
+                .small(),
+        );
     }
 }
 
@@ -469,76 +611,127 @@ impl SettingsApp {
 impl SettingsApp {
     fn text(&mut self, ui: &mut egui::Ui, lang: Lang) {
         let system = tr(lang, "System font", "Системный шрифт");
-        egui::Grid::new("text")
-            .num_columns(2)
-            .spacing([24.0, 12.0])
-            .show(ui, |ui| {
-                ui.label(tr(lang, "Font", "Шрифт"));
-                let current = self.state.text_style.family.clone();
-                egui::ComboBox::from_id_salt("font")
-                    .selected_text(current.as_deref().unwrap_or(system))
-                    .width(260.0)
-                    .height(360.0)
-                    .show_ui(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.font_filter)
-                                .hint_text(tr(lang, "Search…", "Поиск…"))
-                                .desired_width(240.0),
-                        );
-                        if ui.selectable_label(current.is_none(), system).clicked() {
-                            self.state.text_style.family = None;
-                        }
-                        let filter = self.font_filter.to_lowercase();
-                        let families = self
-                            .families
-                            .get_or_insert_with(screenpen_core::text::families);
-                        for family in families
-                            .iter()
-                            .filter(|f| f.to_lowercase().contains(&filter))
-                        {
-                            if ui
-                                .selectable_label(current.as_deref() == Some(family), family)
-                                .clicked()
-                            {
-                                self.state.text_style.family = Some(family.clone());
+        card(ui, tr(lang, "New text", "Новый текст"), |ui| {
+            egui::Grid::new("text")
+                .num_columns(2)
+                .spacing([24.0, 12.0])
+                .show(ui, |ui| {
+                    ui.label(tr(lang, "Font", "Шрифт"));
+                    let current = self.state.text_style.family.clone();
+                    egui::ComboBox::from_id_salt("font")
+                        .selected_text(current.as_deref().unwrap_or(system))
+                        .width(260.0)
+                        .height(360.0)
+                        .show_ui(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.font_filter)
+                                    .hint_text(tr(lang, "Search…", "Поиск…"))
+                                    .desired_width(240.0),
+                            );
+                            if ui.selectable_label(current.is_none(), system).clicked() {
+                                self.state.text_style.family = None;
                             }
+                            let filter = self.font_filter.to_lowercase();
+                            let families = self
+                                .families
+                                .get_or_insert_with(screenpen_core::text::families);
+                            for family in families
+                                .iter()
+                                .filter(|f| f.to_lowercase().contains(&filter))
+                            {
+                                if ui
+                                    .selectable_label(current.as_deref() == Some(family), family)
+                                    .clicked()
+                                {
+                                    self.state.text_style.family = Some(family.clone());
+                                }
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label(tr(lang, "Size", "Размер"));
+                    ui.add(
+                        egui::Slider::new(&mut self.state.text_size, 8.0..=200.0)
+                            .logarithmic(true)
+                            .step_by(1.0)
+                            .suffix(" pt"),
+                    );
+                    ui.end_row();
+
+                    ui.label(tr(lang, "Style", "Начертание"));
+                    ui.horizontal(|ui| {
+                        let style = &mut self.state.text_style;
+                        ui.checkbox(&mut style.bold, tr(lang, "Bold", "Жирный"));
+                        ui.checkbox(&mut style.italic, tr(lang, "Italic", "Курсив"));
+                        ui.checkbox(
+                            &mut style.background,
+                            tr(lang, "Background plate", "Подложка"),
+                        );
+                        ui.checkbox(&mut style.outline, tr(lang, "Outline", "Контур"));
+                    });
+                    ui.end_row();
+                });
+            ui.add_space(6.0);
+            self.preview(ui, lang);
+        });
+        card(
+            ui,
+            tr(lang, "While typing", "Пока печатаете"),
+            |ui| {
+                let keys = [
+                    (
+                        tr(
+                            lang,
+                            "Select all, copy, cut, paste",
+                            "Выделить всё, копировать, вырезать, вставить",
+                        ),
+                        "Ctrl+A  C  X  V",
+                    ),
+                    (
+                        tr(
+                            lang,
+                            "Undo and redo inside the text",
+                            "Отменить и вернуть правку в тексте",
+                        ),
+                        "Ctrl+Z  Y",
+                    ),
+                    (
+                        tr(lang, "Move by words, select", "По словам, выделение"),
+                        "Ctrl / Shift + ←→",
+                    ),
+                    (
+                        tr(lang, "Line start and end", "Начало и конец строки"),
+                        "Home  End",
+                    ),
+                    (
+                        tr(lang, "Text size", "Размер текста"),
+                        "Ctrl+wheel  Ctrl+=  Ctrl+-",
+                    ),
+                    (tr(lang, "Bold, italic", "Жирный, курсив"), "Ctrl+B  I"),
+                    (tr(lang, "New line", "Новая строка"), "Enter"),
+                    (tr(lang, "Done", "Готово"), "Ctrl+Enter  Esc"),
+                ];
+                egui::Grid::new("typing")
+                    .num_columns(2)
+                    .spacing([24.0, 6.0])
+                    .show(ui, |ui| {
+                        for (what, key) in keys {
+                            ui.label(what);
+                            ui.label(RichText::new(key).monospace().color(ACCENT));
+                            ui.end_row();
                         }
                     });
-                ui.end_row();
-
-                ui.label(tr(lang, "Size", "Размер"));
-                ui.add(
-                    egui::Slider::new(&mut self.state.text_size, 8.0..=200.0)
-                        .logarithmic(true)
-                        .step_by(1.0)
-                        .suffix(" pt"),
-                );
-                ui.end_row();
-
-                ui.label(tr(lang, "Style", "Начертание"));
-                ui.horizontal(|ui| {
-                    let style = &mut self.state.text_style;
-                    ui.checkbox(&mut style.bold, tr(lang, "Bold", "Жирный"));
-                    ui.checkbox(&mut style.italic, tr(lang, "Italic", "Курсив"));
-                    ui.checkbox(
-                        &mut style.background,
-                        tr(lang, "Background plate", "Подложка"),
-                    );
-                    ui.checkbox(&mut style.outline, tr(lang, "Outline", "Контур"));
-                });
-                ui.end_row();
-            });
-        ui.add_space(16.0);
-        ui.label(
-            RichText::new(tr(
-                lang,
-                "New text uses these. While typing: Ctrl+wheel, Ctrl+= and Ctrl+- change the size, Ctrl+B and Ctrl+I bold and italic. With text selected, the same keys change it.",
-                "Так выглядит новый текст. При наборе Ctrl+колесо, Ctrl+= и Ctrl+- меняют размер, Ctrl+B и Ctrl+I жирный и курсив. Если текст выделен, те же клавиши меняют его.",
-            ))
-            .weak(),
+                ui.add_space(4.0);
+                ui.label(
+                RichText::new(tr(
+                    lang,
+                    "Click inside the text to move the caret, drag to select, double-click selects a word. On a Mac, Cmd works instead of Ctrl.",
+                    "Клик внутри текста ставит курсор, протяжка выделяет, двойной клик выделяет слово. На Mac вместо Ctrl работает Cmd.",
+                ))
+                .weak(),
+            );
+            },
         );
-        ui.add_space(12.0);
-        self.preview(ui, lang);
     }
 
     /// The sample text rendered by the same code that draws annotations.
@@ -922,91 +1115,181 @@ fn from_egui(key: egui::Key) -> Option<Key> {
 // MARK: palette
 
 impl SettingsApp {
+    fn look(&self, ui: &egui::Ui) -> Look {
+        let theme = match self.state.theme.as_str() {
+            "light" => Theme::Light,
+            "dark" => Theme::Dark,
+            _ if ui.visuals().dark_mode => Theme::Dark,
+            _ => Theme::Light,
+        };
+        Look {
+            badges: self.state.key_badges.then(|| self.state.shortcuts.clone()),
+            width: self.state.width,
+            ..Look::preview(theme, self.state.colors)
+        }
+    }
+
+    /// The palette as it will look, drawn by the same code.
+    fn palette_preview(&mut self, ui: &mut egui::Ui, items: &[Item]) {
+        let look = self.look(ui);
+        let key = format!(
+            "{items:?}{:?}{}{:?}{}",
+            look.theme,
+            self.settings.palette.vertical,
+            self.state.colors,
+            look.badges.is_some()
+        );
+        if self.palette_preview.as_ref().is_none_or(|(k, _)| *k != key) {
+            let mut palette = Palette::new(items.to_vec(), self.settings.palette.vertical);
+            palette.sync(&look);
+            let (w, h) = palette.size_px(2.0);
+            let Some(mut pixmap) = tiny_skia::Pixmap::new(w, h) else {
+                return;
+            };
+            palette.render(&mut pixmap.as_mut(), 2.0, ChannelOrder::Rgba, &look);
+            let texture =
+                ui.ctx()
+                    .load_texture("palette-preview", to_image(&pixmap), Default::default());
+            self.palette_preview = Some((key, texture));
+        }
+        if let Some((_, texture)) = &self.palette_preview {
+            let size = texture.size_vec2() / 2.0;
+            let width = ui.available_width();
+            let size = if size.x > width {
+                size * (width / size.x)
+            } else {
+                size
+            };
+            ui.vertical_centered(|ui| ui.add(egui::Image::new((texture.id(), size))));
+        }
+    }
+
+    /// Icons for every item, in `Item::all()` order.
+    fn icon(&mut self, ui: &egui::Ui, item: Item) -> Option<egui::TextureId> {
+        let look = self.look(ui);
+        let key = format!("{:?}{:?}", look.theme, self.state.colors);
+        if self.icons.as_ref().is_none_or(|(k, _)| *k != key) {
+            let icons = Item::all()
+                .into_iter()
+                .filter_map(|item| {
+                    let pixmap = render_item_icon(item, &look, 2.0)?;
+                    Some(
+                        ui.ctx()
+                            .load_texture(item.name(), to_image(&pixmap), Default::default()),
+                    )
+                })
+                .collect();
+            self.icons = Some((key, icons));
+        }
+        let index = Item::all().iter().position(|i| *i == item)?;
+        self.icons.as_ref()?.1.get(index).map(|t| t.id())
+    }
+
+    fn item_row(&mut self, ui: &mut egui::Ui, item: Item, lang: Lang) {
+        if let Some(id) = self.icon(ui, item) {
+            ui.add(egui::Image::new((id, egui::vec2(24.0, 24.0))));
+        }
+        ui.label(item.label(lang));
+    }
+
     fn palette(&mut self, ui: &mut egui::Ui, lang: Lang) {
         let mut items = self.settings.palette_items();
         let mut changed = false;
-        ui.label(
-            RichText::new(tr(
-                lang,
-                "Drag to reorder. The palette updates as you go.",
-                "Перетаскивай, чтобы поменять порядок. Палитра обновляется сразу.",
-            ))
-            .weak(),
-        );
-        ui.add_space(8.0);
-        ui.columns(2, |cols| {
-            cols[0].heading(tr(lang, "On the palette", "На палитре"));
-            let mut moved: Option<(usize, usize)> = None;
-            let mut removed: Option<usize> = None;
-            let (_, dropped) = cols[0].dnd_drop_zone::<usize, ()>(egui::Frame::default(), |ui| {
-                for (i, item) in items.iter().enumerate() {
-                    let id = ui.make_persistent_id(("palette-item", i));
-                    let row = ui.horizontal(|ui| {
-                        ui.dnd_drag_source(id, i, |ui| {
-                            ui.label(item.label(lang));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("×").clicked() {
-                                removed = Some(i);
-                            }
-                        });
-                    });
-                    if let Some(from) = row.response.dnd_hover_payload::<usize>() {
-                        let rect = row.response.rect;
-                        let y = if *from > i { rect.top() } else { rect.bottom() };
-                        ui.painter().hline(
-                            rect.x_range(),
-                            y,
-                            egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
-                        );
-                    }
-                    if let Some(from) = row.response.dnd_release_payload::<usize>() {
-                        moved = Some((*from, i));
-                    }
+        card(ui, tr(lang, "Preview", "Как выглядит"), |ui| {
+            ui.add_space(4.0);
+            self.palette_preview(ui, &items);
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .checkbox(
+                        &mut self.settings.palette.vertical,
+                        tr(lang, "Vertical", "Вертикально"),
+                    )
+                    .changed();
+                if ui
+                    .button(tr(lang, "Default buttons", "Кнопки по умолчанию"))
+                    .clicked()
+                {
+                    items = Item::defaults();
+                    changed = true;
                 }
             });
-            let _ = dropped;
-            if let Some((from, to)) = moved
-                && from != to
-            {
-                let item = items.remove(from);
-                items.insert(to, item);
-                changed = true;
-            }
-            if let Some(i) = removed {
-                items.remove(i);
-                changed = true;
-            }
-
-            cols[1].heading(tr(lang, "Available", "Можно добавить"));
-            for item in Item::all() {
-                if items.contains(&item) {
-                    continue;
-                }
-                cols[1].horizontal(|ui| {
-                    if ui.small_button("+").clicked() {
-                        items.push(item);
-                        changed = true;
-                    }
-                    ui.label(item.label(lang));
-                });
-            }
+            ui.label(
+                RichText::new(tr(
+                    lang,
+                    "Drag the palette by its dots, double-click them to turn it. Ctrl+wheel over it changes the size.",
+                    "Палитру можно таскать за точки слева, двойной клик по ним поворачивает. Ctrl+колесо над ней меняет размер.",
+                ))
+                .weak(),
+            );
         });
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            changed |= ui
-                .checkbox(
-                    &mut self.settings.palette.vertical,
-                    tr(lang, "Vertical", "Вертикально"),
-                )
-                .changed();
-            if ui
-                .button(tr(lang, "Default buttons", "Кнопки по умолчанию"))
-                .clicked()
-            {
-                items = Item::defaults();
-                changed = true;
-            }
+        card(ui, tr(lang, "Buttons", "Кнопки"), |ui| {
+            ui.label(
+                RichText::new(tr(
+                    lang,
+                    "Drag to reorder. The palette updates as you go.",
+                    "Перетаскивайте, чтобы поменять порядок. Палитра обновляется сразу.",
+                ))
+                .weak(),
+            );
+            ui.add_space(6.0);
+            ui.columns(2, |cols| {
+                cols[0].label(RichText::new(tr(lang, "On the palette", "На палитре")).strong());
+                let mut moved: Option<(usize, usize)> = None;
+                let mut removed: Option<usize> = None;
+                cols[0].vertical(|ui| {
+                    for (i, item) in items.iter().enumerate() {
+                        let id = ui.make_persistent_id(("palette-item", i));
+                        let row = ui.horizontal(|ui| {
+                            ui.dnd_drag_source(id, i, |ui| {
+                                ui.horizontal(|ui| self.item_row(ui, *item, lang));
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("×").clicked() {
+                                        removed = Some(i);
+                                    }
+                                },
+                            );
+                        });
+                        if let Some(from) = row.response.dnd_hover_payload::<usize>() {
+                            let rect = row.response.rect;
+                            let y = if *from > i { rect.top() } else { rect.bottom() };
+                            ui.painter()
+                                .hline(rect.x_range(), y, egui::Stroke::new(2.0, ACCENT));
+                        }
+                        if let Some(from) = row.response.dnd_release_payload::<usize>() {
+                            moved = Some((*from, i));
+                        }
+                    }
+                });
+                if let Some((from, to)) = moved
+                    && from != to
+                {
+                    let item = items.remove(from);
+                    items.insert(to, item);
+                    changed = true;
+                }
+                if let Some(i) = removed {
+                    items.remove(i);
+                    changed = true;
+                }
+
+                cols[1].label(RichText::new(tr(lang, "Can be added", "Можно добавить")).strong());
+                for item in Item::all() {
+                    if items.contains(&item) {
+                        continue;
+                    }
+                    cols[1].horizontal(|ui| {
+                        if ui.small_button("+").clicked() {
+                            items.push(item);
+                            changed = true;
+                        }
+                        self.item_row(ui, item, lang);
+                    });
+                }
+            });
         });
         if changed {
             if items.is_empty() {
@@ -1015,6 +1298,21 @@ impl SettingsApp {
             self.settings.palette.items = items.iter().map(|i| i.name()).collect();
         }
     }
+}
+
+fn to_image(pixmap: &tiny_skia::Pixmap) -> egui::ColorImage {
+    let rgba: Vec<u8> = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect();
+    egui::ColorImage::from_rgba_unmultiplied(
+        [pixmap.width() as usize, pixmap.height() as usize],
+        &rgba,
+    )
 }
 
 #[cfg(test)]

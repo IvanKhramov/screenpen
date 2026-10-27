@@ -1256,6 +1256,64 @@ pub const LENS_RADIUS: f32 = 130.0;
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub const LENS_ZOOM: (f32, f32, f32) = (1.5, 6.0, 0.5);
 
+impl Look {
+    /// A plain look for previews: pen, the first color, no modes.
+    pub fn preview(theme: Theme, colors: [Rgba; 9]) -> Look {
+        Look {
+            tool: ToolKind::Pen,
+            bold: false,
+            italic: false,
+            spotlight: false,
+            magnifier: false,
+            frozen: false,
+            color_index: 0,
+            colors,
+            ghost: false,
+            whiteboard: false,
+            width: WIDTH_PRESETS[1],
+            text_size: 28.0,
+            theme,
+            badges: None,
+        }
+    }
+}
+
+/// One palette button on a transparent square, for the settings window.
+pub fn render_item_icon(item: Item, look: &Look, scale: f32) -> Option<Pixmap> {
+    let size = (CELL * scale).ceil() as u32;
+    let mut pixmap = Pixmap::new(size, size)?;
+    let cell = Rect::new(0.0, 0.0, CELL, CELL);
+    let skin = look.theme.skin();
+    let t = Transform::from_scale(scale, scale);
+    let o = ChannelOrder::Rgba;
+    let mut target = pixmap.as_mut();
+    match item {
+        Item::Action(Action::Width(w)) => {
+            let c = cell.center();
+            let r = [2.0, 3.5, 5.5][w as usize % 3];
+            fill(
+                &mut target,
+                PathBuilder::from_circle(c.x, c.y, r),
+                skin.ink,
+                t,
+                o,
+            );
+        }
+        Item::TextSize => fill(&mut target, glyph(cell, "28", 12.5), skin.ink, t, o),
+        _ => draw_icon(
+            &mut target,
+            item,
+            cell,
+            look,
+            skin.ink,
+            skin.background,
+            t,
+            o,
+        ),
+    }
+    Some(pixmap)
+}
+
 /// `source` (the screen around the pointer) enlarged into a round lens `diameter`
 /// pixels wide, with a thin ring. Byte order follows `source`. Used by the macOS
 /// backend; Windows has the system Magnification API, Linux has no magnifier.

@@ -165,18 +165,18 @@ impl Lang {
 
     pub fn color(self, index: u8) -> String {
         const EN: [&str; 9] = [
-            "Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Pink", "White", "Black",
+            "Red", "Yellow", "Green", "Blue", "White", "Black", "Orange", "Purple", "Pink",
         ];
         const RU: [&str; 9] = [
             "Красный",
-            "Оранжевый",
             "Жёлтый",
             "Зелёный",
             "Синий",
-            "Фиолетовый",
-            "Розовый",
             "Белый",
             "Чёрный",
+            "Оранжевый",
+            "Фиолетовый",
+            "Розовый",
         ];
         let names = if self == Lang::Ru { RU } else { EN };
         let prefix = if self == Lang::Ru {

@@ -47,9 +47,7 @@ fn ask() -> bool {
     std::process::Command::new("defaults")
         .args(["read", "-g", "AppleInterfaceStyle"])
         .output()
-        .is_ok_and(|o| {
-            !String::from_utf8_lossy(&o.stdout).contains("Dark")
-        })
+        .is_ok_and(|o| !String::from_utf8_lossy(&o.stdout).contains("Dark"))
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
