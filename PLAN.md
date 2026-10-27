@@ -262,3 +262,16 @@ Windows и Mac (тема из системы, строки над палитро
 2026-10-27: курсор-кисть на Windows и macOS (кружок размера и цвета штриха с двойной
 обводкой, обновляется сразу при смене цвета или толщины), релиз v0.1.0-alpha.14.
 На Linux остаётся крестик.
+
+## Иконка и установка (2026-10-27)
+
+Иконка рисуется кодом (`screenpen-core::icon`), пример `icon` пишет `assets/` (ico, icns, png).
+Она же в exe (build.rs + winresource, со сведениями о версии), в окне настроек и в трее
+с точкой состояния. Windows: установщик Inno Setup на пользователя (`packaging/windows`),
+`screenpen --quit` останавливает запущенную копию перед заменой. macOS: иконка в .app и DMG.
+Linux: `install.sh` в архиве. Релиз v0.1.0-alpha.15.
+
+Подпись не сделана: OV/EV и Azure для резидента РФ закрыты, Apple Developer из РФ не
+оплатить. Варианты (разбор в `~/Work/screenpen-research/signing.md`): winget (установка без
+SmartScreen), SignPath Foundation (бесплатно для OSS, издатель "SignPath Foundation"),
+Microsoft Store (регистрация физлица бесплатная, доступность для РФ не подтверждена).
