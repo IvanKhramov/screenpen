@@ -71,6 +71,8 @@ pub struct ToolState {
     pub presets: [Preset; 3],
     /// How long the timer counts down.
     pub timer_minutes: f32,
+    /// In mouse mode, show where clicks land and which shortcuts are pressed.
+    pub show_input: bool,
     /// For messages drawn on the screen.
     pub lang: Lang,
 }
@@ -91,6 +93,7 @@ impl Default for ToolState {
             key_badges: true,
             presets: Preset::DEFAULTS,
             timer_minutes: 5.0,
+            show_input: false,
             lang: Lang::En,
             text_style: TextStyle::default(),
             ui_scale: 1.0,

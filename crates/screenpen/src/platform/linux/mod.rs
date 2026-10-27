@@ -333,6 +333,8 @@ fn on_event(app: &mut App, event: Event) {
             text,
         } => on_key(app, win, key, mods, text),
         Event::MonitorsChanged => rebuild_overlays(app),
+        Event::SeenClick { at, right } => on_input_seen(app, at, Err(right)),
+        Event::SeenKeys { at, chord } => on_input_seen(app, at, Ok(chord)),
     }
 }
 
@@ -627,8 +629,41 @@ fn hide(app: &mut App) {
     app.sheet.hide(app.display.as_mut());
     app.display.set_keyboard(false, app.focus);
     update_tick(app);
+    update_input_watch(app);
     update_tray(app);
     log("hide");
+}
+
+/// Clicks and keys are shown only in mouse mode, when turned on (X11 only).
+fn update_input_watch(app: &mut App) {
+    let want = app.active && app.ghost && app.state.show_input;
+    if app.display.watch_input(want) != want {
+        log("show input: not available here");
+    }
+}
+
+/// Draws a click (`Err(right)`) or a shortcut seen in another app.
+fn on_input_seen(app: &mut App, at: (i32, i32), seen: Result<Chord, bool>) {
+    let Some(i) = app
+        .overlays
+        .iter()
+        .position(|o| o.monitor.area.contains(at))
+    else {
+        return;
+    };
+    let o = &mut app.overlays[i];
+    let shown = match seen {
+        Err(right) => {
+            let (x, y) = (at.0 - o.monitor.area.x, at.1 - o.monitor.area.y);
+            o.canvas.show_click(x as f32, y as f32, right);
+            true
+        }
+        Ok(chord) => o.canvas.show_keys(chord),
+    };
+    if shown {
+        paint(app.display.as_mut(), i, o, Repaint::None);
+        update_tick(app);
+    }
 }
 
 fn set_ghost(app: &mut App, ghost: bool) {
@@ -647,6 +682,7 @@ fn set_ghost(app: &mut App, ghost: bool) {
         focus_overlay_under_cursor(app);
     }
     log(&format!("ghost: {ghost}"));
+    update_input_watch(app);
     update_tray(app);
 }
 
@@ -671,7 +707,9 @@ fn update_tick(app: &mut App) {
     let animating = app.overlays.iter().any(|o| o.canvas.animating());
     let interval = if app.active && animating {
         Some(16)
-    } else if app.active && app.state.auto_fade.is_some() {
+    } else if app.active
+        && (app.state.auto_fade.is_some() || app.overlays.iter().any(|o| o.canvas.ticking()))
+    {
         Some(50)
     } else {
         None
@@ -1029,6 +1067,7 @@ fn run_action(app: &mut App, index: usize, action: Action) {
             update_cursor(app);
             render_palette(app);
             save_settings(app);
+            update_input_watch(app);
         }
     }
     update_tick(app);

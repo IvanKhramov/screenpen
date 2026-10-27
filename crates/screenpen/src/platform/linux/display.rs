@@ -85,6 +85,16 @@ pub enum Event {
         text: Option<char>,
     },
     MonitorsChanged,
+    /// A click in another app, seen while watching input (global pixels).
+    SeenClick {
+        at: (i32, i32),
+        right: bool,
+    },
+    /// A key pressed in another app, with the pointer's position then.
+    SeenKeys {
+        at: (i32, i32),
+        chord: Chord,
+    },
 }
 
 pub trait Display {
@@ -118,4 +128,7 @@ pub trait Display {
     fn flush(&mut self);
     /// Global hotkeys work (they don't on Wayland).
     fn has_hotkeys(&self) -> bool;
+    /// Reports clicks and keys in other apps as `Seen*` events, or stops. Returns
+    /// whether it's watching.
+    fn watch_input(&mut self, on: bool) -> bool;
 }

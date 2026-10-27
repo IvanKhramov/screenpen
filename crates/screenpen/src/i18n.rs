@@ -229,6 +229,7 @@ impl Lang {
             Action::Escape => fixed("Deselect / stop drawing", "Снять выделение / закончить"),
             Action::Caption => fixed("Caption the arrow", "Подпись к стрелке"),
             Action::Timer => fixed("Timer", "Таймер"),
+            Action::ShowInput => fixed("Show clicks and keys", "Показывать клики и клавиши"),
             Action::Ghost => fixed("Mouse", "Мышь"),
             Action::Whiteboard => fixed("Whiteboard", "Белая доска"),
             Action::Spotlight => fixed("Spotlight", "Прожектор"),

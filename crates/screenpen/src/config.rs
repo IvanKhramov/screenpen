@@ -44,6 +44,8 @@ pub struct Settings {
     pub palette: PaletteSettings,
     /// How long the timer (Ctrl+T) counts down.
     pub timer_minutes: f32,
+    /// In mouse mode, show clicks and shortcuts (for recordings and lessons).
+    pub show_input: bool,
     /// Shift+1..3: tool name, 1-based color and width.
     pub presets: Vec<PresetSettings>,
     /// Action name to chord, e.g. "tool.pen" = "P". An empty string turns it off.
@@ -226,6 +228,7 @@ impl Settings {
             key_badges: state.key_badges,
             palette: palette.clone(),
             timer_minutes: state.timer_minutes,
+            show_input: state.show_input,
             presets: state
                 .presets
                 .iter()
@@ -283,6 +286,7 @@ impl Settings {
             _ => "system".to_string(),
         };
         state.key_badges = self.key_badges;
+        state.show_input = self.show_input;
         state.timer_minutes = if self.timer_minutes.is_finite() {
             self.timer_minutes.clamp(1.0, 180.0)
         } else {

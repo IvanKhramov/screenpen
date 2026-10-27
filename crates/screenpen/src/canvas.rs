@@ -98,6 +98,12 @@ const LASER_POINTS: usize = 600;
 /// Spotlight radius in points, and its limits for the wheel.
 const SPOTLIGHT_RADIUS: f32 = 140.0;
 const SPOTLIGHT_LIMITS: (f32, f32) = (40.0, 600.0);
+/// Click rings and the shortcut pill in mouse mode: how long they show, and the pill's
+/// text size and distance from the bottom-left corner (points).
+const RIPPLE_SECONDS: f64 = 0.6;
+const KEYCAST_SECONDS: f64 = 1.5;
+const KEYCAST_SIZE: f32 = 20.0;
+const KEYCAST_MARGIN: f32 = 24.0;
 /// The timer's text size and distance from the screen's top-right corner, in points.
 const TIMER_SIZE: f32 = 26.0;
 const TIMER_MARGIN: f32 = 24.0;
@@ -329,6 +335,12 @@ pub struct Canvas {
     /// A short message at the top of the screen, and when it appeared.
     toast: Option<(String, f64)>,
     timer: Option<Timer>,
+    /// What the timer showed at the last tick, to repaint it only when that changes.
+    timer_label: Option<String>,
+    /// Clicks shown in mouse mode: where (points), when, and whether right-button.
+    ripples: Vec<(Point, f64, bool)>,
+    /// The last shortcut pressed in mouse mode, and when.
+    keycast: Option<(String, f64)>,
     /// The arrow just drawn (tail, head), for Enter to caption it.
     last_arrow: Option<(Point, Point)>,
 }
@@ -365,6 +377,9 @@ impl Canvas {
             toast: None,
             last_arrow: None,
             timer: None,
+            timer_label: None,
+            ripples: Vec::new(),
+            keycast: None,
         })
     }
 
@@ -542,9 +557,29 @@ impl Canvas {
         {
             self.toast = None;
         }
+        let at = now();
+        if self
+            .keycast
+            .as_ref()
+            .is_some_and(|(_, t)| at - t >= KEYCAST_SECONDS)
+        {
+            self.keycast = None;
+        }
+        self.ripples.retain(|&(_, t, _)| at - t < RIPPLE_SECONDS);
+        // The timer repaints when its text changes, once a second.
+        let label = self
+            .timer_layout()
+            .map(|(r, text, color)| (r, format!("{text}{color:?}")));
+        let timer = match (&label, &self.timer_label) {
+            (Some((r, now)), last) if last.as_ref() != Some(now) => {
+                Repaint::Rect(self.to_pixels(r.inset(-2.0)))
+            }
+            _ => Repaint::None,
+        };
+        self.timer_label = label.map(|(_, l)| l);
         let straightened = self.tick_hold();
         let (repaint, more) = self.tick_fade();
-        (repaint.union(straightened), more || laser)
+        (repaint.union(straightened).union(timer), more || laser)
     }
 
     /// Whether something animates and needs frequent ticks (not auto-fade's slow ones).
@@ -552,7 +587,90 @@ impl Canvas {
         self.laser.released.is_some()
             || matches!(self.gesture, Gesture::Freehand { .. })
             || self.toast.is_some()
-            || self.timer.is_some_and(|t| t.paused.is_none())
+            || !self.ripples.is_empty()
+            || self.keycast.is_some()
+    }
+
+    /// A ring where a click landed, `x` and `y` in pixels from the screen's corner.
+    pub fn show_click(&mut self, x: f32, y: f32, right: bool) {
+        let at = Point::new(x / self.scale, y / self.scale);
+        self.ripples.push((at, now(), right));
+    }
+
+    /// Shows a shortcut in the corner. Plain typing (letters, with or without Shift)
+    /// is never shown: only chords with Ctrl or Alt and named keys like Enter or F5.
+    pub fn show_keys(&mut self, chord: Chord) -> bool {
+        let plain = matches!(chord.key, Key::Char(_) | Key::Space) && !chord.ctrl && !chord.alt;
+        if !plain {
+            self.keycast = Some((chord.to_string(), now()));
+        }
+        !plain
+    }
+
+    /// Shows a shortcut already put into words (macOS adds Cmd, which chords lack).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn show_label(&mut self, label: String) {
+        self.keycast = Some((label, now()));
+    }
+
+    fn keycast_layout(&self) -> Option<(Rect, tiny_skia::Path)> {
+        let (text, _) = self.keycast.as_ref()?;
+        let path = screenpen_core::text::path(text, KEYCAST_SIZE, Point::default())?;
+        let (w, h) = (
+            path.bounds().width() + KEYCAST_SIZE * 1.4,
+            KEYCAST_SIZE * 2.0,
+        );
+        let y = self.height as f32 / self.scale - h - KEYCAST_MARGIN;
+        Some((Rect::new(KEYCAST_MARGIN, y, w, h), path))
+    }
+
+    fn draw_input(&self, target: &mut PixmapMut) {
+        let t = self.transform();
+        let mut paint = Paint {
+            anti_alias: true,
+            ..Paint::default()
+        };
+        let at = now();
+        for &(p, started, right) in &self.ripples {
+            let k = ((at - started) / RIPPLE_SECONDS).clamp(0.0, 1.0) as f32;
+            let color = if right {
+                Rgba::rgb(0.2, 0.6, 1.0)
+            } else {
+                Rgba::rgb(1.0, 0.78, 0.1)
+            };
+            let Some(ring) = PathBuilder::from_circle(p.x, p.y, 10.0 + 20.0 * k) else {
+                continue;
+            };
+            paint.set_color(skia_color(color.with_alpha(0.3 * (1.0 - k)), self.order));
+            target.fill_path(&ring, &paint, FillRule::Winding, t, None);
+            paint.set_color(skia_color(color.with_alpha(1.0 - k), self.order));
+            let stroke = Stroke {
+                width: 3.0,
+                ..Stroke::default()
+            };
+            target.stroke_path(&ring, &paint, &stroke, t, None);
+        }
+        let Some(((rect, path), started)) = self
+            .keycast_layout()
+            .zip(self.keycast.as_ref().map(|k| k.1))
+        else {
+            return;
+        };
+        let alpha = ((KEYCAST_SECONDS - (at - started)) / 0.3).clamp(0.0, 1.0) as f32;
+        if let Some(pill) = rounded_rect(rect, 10.0) {
+            paint.set_color(skia_color(
+                Rgba::rgb(0.11, 0.11, 0.12).with_alpha(0.9 * alpha),
+                self.order,
+            ));
+            target.fill_path(&pill, &paint, FillRule::Winding, t, None);
+        }
+        let b = path.bounds();
+        let dx = rect.x + (rect.width - b.width()) / 2.0 - b.left();
+        let dy = rect.y + (rect.height - b.height()) / 2.0 - b.top();
+        if let Some(glyphs) = path.transform(Transform::from_translate(dx, dy)) {
+            paint.set_color(skia_color(Rgba::WHITE.with_alpha(alpha), self.order));
+            target.fill_path(&glyphs, &paint, FillRule::Winding, t, None);
+        }
     }
 
     /// Where the timer is drawn, in points, and what it says.
@@ -614,6 +732,11 @@ impl Canvas {
             timer.toggle_pause();
         }
         on_pill
+    }
+
+    /// Whether something changes now and then and needs slow ticks: the timer.
+    pub fn ticking(&self) -> bool {
+        self.timer.is_some_and(|t| t.paused.is_none())
     }
 
     /// Shows `text` at the top of the screen for a moment.
@@ -789,6 +912,12 @@ impl Canvas {
         if let Some((b, _, _)) = self.timer_layout() {
             add(b);
         }
+        if let Some((b, _)) = self.keycast_layout() {
+            add(b);
+        }
+        for (p, _, _) in &self.ripples {
+            add(Rect::new(p.x - 32.0, p.y - 32.0, 64.0, 64.0));
+        }
         for (a, b) in &self.guides {
             add(Rect::from_points(*a, *b));
         }
@@ -847,6 +976,7 @@ impl Canvas {
         self.draw_laser(target);
         self.draw_toast(target);
         self.draw_timer(target);
+        self.draw_input(target);
         match &self.gesture {
             Gesture::Shape {
                 preview: Some(a), ..
@@ -2014,6 +2144,18 @@ impl Canvas {
                 }
             }
             Action::Caption => (self.caption(state), None),
+            Action::ShowInput => {
+                state.show_input = !state.show_input;
+                let lang = state.lang;
+                let on = match (state.show_input, lang) {
+                    (true, Lang::Ru) => "вкл, видно в режиме «Мышь»",
+                    (false, Lang::Ru) => "выкл",
+                    (true, _) => "on, shown in mouse mode",
+                    (false, _) => "off",
+                };
+                self.show_toast(format!("{}: {on}", lang.action(action)));
+                (Repaint::None, Some(Request::StateChanged))
+            }
             Action::Timer => {
                 self.timer = match self.timer {
                     Some(_) => None,
@@ -2497,7 +2639,13 @@ mod tests {
         c.perform(&mut state, Action::Timer);
         let (rect, text, _) = c.timer_layout().unwrap();
         assert!(text == "5:00" || text == "4:59", "{text}");
-        assert!(c.animating());
+        assert!(c.ticking() && !c.animating(), "slow ticks are enough");
+        assert_ne!(c.tick().0, Repaint::None, "first tick draws it");
+        assert_eq!(
+            c.tick().0,
+            Repaint::None,
+            "then only when the second changes"
+        );
         let mut target = Pixmap::new(400, 300).unwrap();
         c.paint(&mut target.as_mut(), Repaint::Full);
         let mid = rect.center();
@@ -2510,9 +2658,30 @@ mod tests {
         let p = at(mid.x * 2.0, mid.y * 2.0);
         c.pointer_down(&state, p, Button::Left);
         c.pointer_up(&state, p);
-        assert!(c.doc.annotations().is_empty() && !c.animating());
+        assert!(c.doc.annotations().is_empty() && !c.ticking());
         c.perform(&mut state, Action::Timer);
         assert!(c.timer_layout().is_none());
+    }
+
+    #[test]
+    fn shows_clicks_and_shortcuts_but_not_typing() {
+        let mut c = canvas();
+        c.show_click(100.0, 100.0, false);
+        assert!(c.animating());
+        assert!(
+            !c.show_keys(Chord::key(Key::Char('A'))),
+            "typing stays private"
+        );
+        assert!(!c.show_keys(Chord {
+            shift: true,
+            ..Chord::key(Key::Char('A'))
+        }));
+        assert!(c.show_keys(Chord::ctrl(Key::Char('C'))));
+        assert!(c.show_keys(Chord::key(Key::F(5))));
+        let mut target = Pixmap::new(400, 300).unwrap();
+        c.paint(&mut target.as_mut(), Repaint::Full);
+        assert!(opaque(&target, 100 + 22, 100), "the ring");
+        assert!(opaque(&target, 60, 300 - 60), "the pill");
     }
 
     #[test]

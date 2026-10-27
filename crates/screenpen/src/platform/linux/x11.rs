@@ -13,13 +13,14 @@ use screenpen_core::{Action, Chord, Key};
 use tiny_skia::{IntRect, Pixmap, PixmapRef};
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::errors::{ConnectionError, ReplyOrIdError};
+use x11rb::protocol::xinput::ConnectionExt as _;
 use x11rb::protocol::xproto::{
     Atom, AtomEnum, ButtonPressEvent, ChangeWindowAttributesAux, ClipOrdering, ConfigureWindowAux,
     ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, GrabMode, GrabStatus, ImageFormat,
     KeyPressEvent, ModMask, NotifyMode, PropMode, SelectionNotifyEvent, SelectionRequestEvent,
     StackMode, VisualClass, Window, WindowClass,
 };
-use x11rb::protocol::{Event as XEvent, randr, shape, xkb, xtest};
+use x11rb::protocol::{Event as XEvent, randr, shape, xinput, xkb, xtest};
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::{CURRENT_TIME, NONE};
@@ -78,6 +79,8 @@ pub struct X11 {
     atoms: Atoms,
     clipboard: Option<Vec<u8>>,
     composited: bool,
+    /// Raw clicks and keys from every app are selected on the root window.
+    watching: bool,
 }
 
 fn mods(state: u16) -> Mods {
@@ -213,6 +216,7 @@ impl X11 {
             atoms,
             clipboard: None,
             composited,
+            watching: false,
         };
         x.load_keymap()?;
         conn.flush()?;
@@ -463,6 +467,12 @@ impl X11 {
             at: (e.root_x as i32, e.root_y as i32),
             mods: mods(u16::from(e.state)),
         })
+    }
+
+    /// Where the pointer is and which modifiers are held, from the server.
+    fn pointer_and_mods(&self) -> Option<((i32, i32), Mods)> {
+        let r = self.conn.query_pointer(self.root).ok()?.reply().ok()?;
+        Some(((r.root_x as i32, r.root_y as i32), mods(u16::from(r.mask))))
     }
 
     fn key_event(&self, e: &KeyPressEvent) -> Event {
@@ -855,6 +865,25 @@ impl Display for X11 {
                 None
             }
             XEvent::RandrScreenChangeNotify(_) => Some(Event::MonitorsChanged),
+            XEvent::XinputRawButtonPress(e) if self.watching && matches!(e.detail, 1 | 3) => {
+                self.pointer_and_mods().map(|(at, _)| Event::SeenClick {
+                    at,
+                    right: e.detail == 3,
+                })
+            }
+            XEvent::XinputRawKeyPress(e) if self.watching => {
+                let key = key_from_code(e.detail.saturating_sub(EVDEV_OFFSET as u32));
+                key.zip(self.pointer_and_mods())
+                    .map(|(key, (at, m))| Event::SeenKeys {
+                        at,
+                        chord: Chord {
+                            ctrl: m.ctrl,
+                            alt: m.alt,
+                            shift: m.shift,
+                            key,
+                        },
+                    })
+            }
             XEvent::SelectionRequest(e) => {
                 self.on_selection_request(&e);
                 None
@@ -874,6 +903,37 @@ impl Display for X11 {
 
     fn flush(&mut self) {
         let _ = self.conn.flush();
+    }
+
+    fn watch_input(&mut self, on: bool) -> bool {
+        if on == self.watching {
+            return on;
+        }
+        // XInput 2.2 for raw events from every client.
+        let version = self
+            .conn
+            .xinput_xi_query_version(2, 2)
+            .ok()
+            .and_then(|c| c.reply().ok());
+        if on && version.is_none_or(|v| (v.major_version, v.minor_version) < (2, 1)) {
+            log("show input: the X server has no XInput 2.1");
+            return false;
+        }
+        let mask = if on {
+            xinput::XIEventMask::RAW_BUTTON_PRESS | xinput::XIEventMask::RAW_KEY_PRESS
+        } else {
+            xinput::XIEventMask::from(0u32)
+        };
+        let masks = [xinput::EventMask {
+            deviceid: xinput::Device::ALL_MASTER.into(),
+            mask: vec![mask],
+        }];
+        let ok = self
+            .conn
+            .xinput_xi_select_events(self.root, &masks)
+            .is_ok_and(|c| c.check().is_ok());
+        self.watching = on && ok;
+        self.watching
     }
 
     fn has_hotkeys(&self) -> bool {
@@ -954,7 +1014,7 @@ fn smoke_steps(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> 
     pause(500);
     // The default drawing hotkey, Ctrl+Alt+Shift+A, through the passive grab.
     key(code(Key::Char('A')), &[ctrl, alt, shift])?;
-    pause(400);
+    pause(800);
     let wave: Vec<(i16, i16)> = (0..40)
         .map(|i| (100 + i * 8, 300 + ((i as f32 / 4.0).sin() * 60.0) as i16))
         .collect();
@@ -971,17 +1031,67 @@ fn smoke_steps(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> 
     let image = conn
         .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, w, h, !0)?
         .reply()?;
-    let mut pixmap = Pixmap::new(w as u32, h as u32).ok_or("size")?;
-    for (dst, src) in pixmap
-        .data_mut()
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(image.data.as_chunks::<4>().0)
-    {
-        *dst = [src[2], src[1], src[0], 255];
-    }
     std::fs::create_dir_all(dir)?;
-    pixmap.save_png(dir.join("screen.png"))?;
+    let shot = |name: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let image = conn
+            .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, w, h, !0)?
+            .reply()?;
+        let mut pixmap = Pixmap::new(w as u32, h as u32).ok_or("size")?;
+        for (dst, src) in pixmap
+            .data_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(image.data.as_chunks::<4>().0)
+        {
+            *dst = [src[2], src[1], src[0], 255];
+        }
+        pixmap.save_png(dir.join(name))?;
+        Ok(())
+    };
+    drop(image);
+    shot("screen.png")?;
+
+    // Presenter tools: the timer, a captioned arrow, pixelation over the wave, and a
+    // stroke held still until it straightens.
+    key(code(Key::Char('T')), &[ctrl])?;
+    key(code(Key::Char('A')), &[])?;
+    drag(&[(900, 200), (820, 260), (760, 300)])?;
+    key(code(Key::Enter), &[])?;
+    key(code(Key::Char('O')), &[shift])?;
+    key(code(Key::Char('K')), &[])?;
+    key(code(Key::Escape), &[])?;
+    key(code(Key::Char('B')), &[])?;
+    // The first move captures the screen for pixelating, which hides our windows
+    // for a moment; input meanwhile goes past them.
+    input(MOTION_NOTIFY_EVENT, 0, 100, 260)?;
+    pause(500);
+    drag(&[(100, 260), (250, 300), (360, 360)])?;
+    key(code(Key::Char('P')), &[])?;
+    let circle: Vec<(i16, i16)> = (0..=36)
+        .map(|i| {
+            let a = i as f32 / 36.0 * std::f32::consts::TAU;
+            (650 + (90.0 * a.cos()) as i16, 520 + (60.0 * a.sin()) as i16)
+        })
+        .collect();
+    input(MOTION_NOTIFY_EVENT, 0, circle[0].0, circle[0].1)?;
+    input(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+    for &(x, y) in &circle[1..] {
+        input(MOTION_NOTIFY_EVENT, 0, x, y)?;
+    }
+    pause(700);
+    input(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+    pause(300);
+    shot("tools.png")?;
+
+    // Mouse mode with clicks and keys shown (the smoke settings turn that on).
+    key(code(Key::Char('G')), &[])?;
+    pause(300);
+    input(MOTION_NOTIFY_EVENT, 0, 1000, 600)?;
+    input(BUTTON_PRESS_EVENT, 1, 0, 0)?;
+    input(BUTTON_RELEASE_EVENT, 1, 0, 0)?;
+    key(code(Key::Char('C')), &[ctrl])?;
+    pause(150);
+    shot("ghost.png")?;
     Ok(())
 }

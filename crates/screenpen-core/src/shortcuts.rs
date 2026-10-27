@@ -227,6 +227,8 @@ pub enum Action {
     Snapshot,
     /// A countdown in the corner; again to remove it.
     Timer,
+    /// In mouse mode, rings where clicks land and the shortcuts pressed.
+    ShowInput,
     Help,
     /// Global: start or stop drawing.
     ToggleDrawing,
@@ -275,6 +277,7 @@ impl Action {
                     Action::Magnifier => "magnifier",
                     Action::Snapshot => "snapshot",
                     Action::Timer => "timer",
+                    Action::ShowInput => "show_input",
                     Action::Help => "help",
                     Action::ToggleDrawing => "toggle_drawing",
                     Action::ExitGhost => "exit_ghost",
@@ -375,6 +378,7 @@ impl Default for Shortcuts {
             (Action::Magnifier, key('M')),
             (Action::Snapshot, Some(Chord::ctrl(Char('S')))),
             (Action::Timer, Some(Chord::ctrl(Char('T')))),
+            (Action::ShowInput, None),
             (
                 Action::Help,
                 Some(Chord {

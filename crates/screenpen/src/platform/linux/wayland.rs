@@ -599,6 +599,13 @@ impl Display for Wayland {
     fn has_hotkeys(&self) -> bool {
         false
     }
+
+    fn watch_input(&mut self, on: bool) -> bool {
+        if on {
+            log("Wayland doesn't let apps see other apps' clicks and keys");
+        }
+        false
+    }
 }
 
 // MARK: protocol handlers

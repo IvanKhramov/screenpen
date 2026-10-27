@@ -42,6 +42,7 @@ features = [
 ]
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-core-foundation = "0.3"
@@ -54,7 +55,7 @@ ksni = { version = "0.3", default-features = false, features = ["async-io", "blo
 libc = "0.2"
 rustix = { version = "1", features = ["event"] }
 sctk = { package = "smithay-client-toolkit", version = "0.19", default-features = false }
-x11rb = { version = "0.13", features = ["randr", "shape", "xkb", "xtest"] }
+x11rb = { version = "0.13", features = ["randr", "shape", "xinput", "xkb", "xtest"] }
 xkbcommon-dl = "0.4"
 xkeysym = "0.2"
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }

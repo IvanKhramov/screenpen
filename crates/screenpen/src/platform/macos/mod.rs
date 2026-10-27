@@ -22,12 +22,17 @@ use std::path::PathBuf;
 use std::process::Child;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::ptr::NonNull;
+
+use block2::RcBlock;
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
-    NSApplicationDidChangeScreenParametersNotification, NSCursor, NSEvent, NSEventSubtype, NSMenu,
-    NSPointingDeviceType, NSRunningApplication, NSScreen,
+    NSApplicationDidChangeScreenParametersNotification, NSCursor, NSEvent, NSEventMask,
+    NSEventModifierFlags, NSEventSubtype, NSEventType, NSMenu, NSPointingDeviceType,
+    NSRunningApplication, NSScreen,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
@@ -126,6 +131,8 @@ struct Overlay {
 
 struct App {
     mtm: MainThreadMarker,
+    /// Watches clicks and keys in other apps while they're shown in mouse mode.
+    input_monitor: Option<Retained<AnyObject>>,
     brush_cursor: cursor::BrushCursor,
     overlays: Vec<Overlay>,
     state: ToolState,
@@ -205,6 +212,7 @@ pub fn run() {
         frozen: false,
         lens: None,
         lens_on: false,
+        input_monitor: None,
         lens_zoom: 2.0,
         eraser: false,
         pressed: None,
@@ -696,6 +704,7 @@ fn hide(app: &mut App) {
     app.palette.hide();
     app.sheet.hide();
     update_fade_timer(app);
+    update_input_monitor(app);
     update_tray(app);
     log("hide");
 }
@@ -724,7 +733,61 @@ fn set_ghost(app: &mut App, ghost: bool) {
         focus_overlay_under_cursor(app);
     }
     log(&format!("ghost {ghost}"));
+    update_input_monitor(app);
     update_tray(app);
+}
+
+/// Clicks and keys are shown only in mouse mode, when turned on. Keys in other apps
+/// need the Accessibility permission; without it only clicks show.
+fn update_input_monitor(app: &mut App) {
+    let want = app.active && app.ghost && app.state.show_input;
+    if want && app.input_monitor.is_none() {
+        let mask = NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::KeyDown;
+        let block = RcBlock::new(|event: NonNull<NSEvent>| {
+            // AppKit hands the event over for the call only.
+            let event = unsafe { event.as_ref() };
+            with_app(|app| on_input_seen(app, event));
+        });
+        app.input_monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block);
+        if app.input_monitor.is_none() {
+            log("show input: no event monitor");
+        }
+    } else if !want && let Some(monitor) = app.input_monitor.take() {
+        unsafe { NSEvent::removeMonitor(&monitor) };
+    }
+}
+
+/// Draws a click or a shortcut seen in another app on the screen under the pointer.
+fn on_input_seen(app: &mut App, event: &NSEvent) {
+    let at = mouse(app.mtm);
+    let Some(o) = app.overlays.iter_mut().find(|o| o.frame.contains(at)) else {
+        return;
+    };
+    let kind = event.r#type();
+    let shown = if kind == NSEventType::KeyDown {
+        let Some(chord) = keys::chord(event) else {
+            return;
+        };
+        if event
+            .modifierFlags()
+            .contains(NSEventModifierFlags::Command)
+        {
+            o.canvas.show_label(format!("Cmd+{chord}"));
+            true
+        } else {
+            o.canvas.show_keys(chord)
+        }
+    } else {
+        let s = o.canvas.scale() as f64;
+        let (x, y) = ((at.0 - o.frame.x) * s, (at.1 - o.frame.y) * s);
+        o.canvas
+            .show_click(x as f32, y as f32, kind == NSEventType::RightMouseDown);
+        true
+    };
+    if shown {
+        paint(o, Repaint::None);
+        update_fade_timer(app);
+    }
 }
 
 fn mode(app: &App) -> Mode {
@@ -762,11 +825,12 @@ fn focus_overlay_under_cursor(app: &App) {
 /// One timer drives auto-fade (slow) and the laser fade-out (smooth).
 fn update_fade_timer(app: &mut App) {
     let animating = app.overlays.iter().any(|o| o.canvas.animating()) || app.lens_on;
-    let wanted = match (app.active, animating, app.state.auto_fade) {
+    let slow = app.state.auto_fade.is_some() || app.overlays.iter().any(|o| o.canvas.ticking());
+    let wanted = match (app.active, animating, slow) {
         (false, _, _) => None,
         (true, true, _) => Some(0.016),
-        (true, false, Some(_)) => Some(0.05),
-        (true, false, None) => None,
+        (true, false, true) => Some(0.05),
+        (true, false, false) => None,
     };
     if app.fade_timer.as_ref().map(|(_, i)| *i) == wanted {
         return;
@@ -1184,6 +1248,7 @@ fn run_action(app: &mut App, index: usize, action: Action) {
             }
             render_palette(app);
             save_settings(app);
+            update_input_monitor(app);
         }
     }
 }

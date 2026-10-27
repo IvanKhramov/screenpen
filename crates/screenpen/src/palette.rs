@@ -32,11 +32,12 @@ const SHAPES: [ToolKind; 5] = [
     ToolKind::Pixelate,
 ];
 
-const MORE: [Item; 6] = [
+const MORE: [Item; 7] = [
     Item::Action(Action::Whiteboard),
     Item::Action(Action::Freeze),
     Item::Action(Action::Snapshot),
     Item::Action(Action::Timer),
+    Item::Action(Action::ShowInput),
     Item::Action(Action::Help),
     Item::Settings,
 ];
@@ -97,6 +98,7 @@ impl Item {
                 Action::Freeze,
                 Action::Snapshot,
                 Action::Timer,
+                Action::ShowInput,
                 Action::Help,
             ]
             .map(Item::Action),
@@ -145,7 +147,11 @@ impl Item {
                 Action::SelectAll | Action::BringToFront | Action::DeleteSelection | Action::Escape,
             ) => 5,
             Item::Action(
-                Action::Whiteboard | Action::Freeze | Action::Snapshot | Action::Timer,
+                Action::Whiteboard
+                | Action::Freeze
+                | Action::Snapshot
+                | Action::Timer
+                | Action::ShowInput,
             ) => 9,
             _ => 6,
         }
@@ -1086,6 +1092,29 @@ fn draw_icon(
                 (15.2, 11.9),
             ];
             stroke(pixmap, polyline(cell, &pts, true), ink, 1.7, t, o);
+        }
+        Action::ShowInput => {
+            // A pointer with a click ring.
+            let c = cell.center();
+            stroke(
+                pixmap,
+                PathBuilder::from_circle(c.x - 2.0, c.y - 2.0, 6.0),
+                ink,
+                1.6,
+                t,
+                o,
+            );
+            fill(
+                pixmap,
+                polyline(
+                    cell,
+                    &[(8.0, 8.0), (16.0, 11.5), (12.5, 12.5), (11.5, 16.0)],
+                    true,
+                ),
+                ink,
+                t,
+                o,
+            );
         }
         Action::Timer => {
             let c = Point::new(cell.center().x, cell.center().y + 1.0);

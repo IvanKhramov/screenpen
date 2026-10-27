@@ -6,6 +6,7 @@
 mod autostart;
 mod capture;
 mod cursor;
+mod input;
 mod instance;
 mod keys;
 mod magnifier;
@@ -747,7 +748,43 @@ fn hide(app: &mut App) {
     update_fade_timer(app);
     let ok = unsafe { SetForegroundWindow(app.previous) } != 0;
     log(&format!("hide: focus back to {:?}: {ok}", app.previous));
+    update_input_hooks(app);
     update_tray(app);
+}
+
+/// Clicks and keys are shown only in mouse mode, when turned on.
+fn update_input_hooks(app: &mut App) {
+    let want = app.active && app.ghost && app.state.show_input;
+    if input::set(want, app.tray_hwnd) != want {
+        log("show input: the hooks could not be installed");
+    }
+}
+
+/// Draws the clicks and keys the hooks saw on the screens they happened on.
+fn on_input_seen(app: &mut App) {
+    let mut cursor = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&mut cursor) };
+    for seen in input::take() {
+        let (at, keys) = match seen {
+            input::Seen::Click(p, right) => (p, Err(right)),
+            input::Seen::Keys(chord) => (cursor, Ok(chord)),
+        };
+        let Some(o) = app.overlays.iter_mut().find(|o| contains(o.monitor, at)) else {
+            continue;
+        };
+        let shown = match keys {
+            Err(right) => {
+                let (x, y) = (at.x - o.monitor.left, at.y - o.monitor.top);
+                o.canvas.show_click(x as f32, y as f32, right);
+                true
+            }
+            Ok(chord) => o.canvas.show_keys(chord),
+        };
+        if shown {
+            paint(o, Repaint::None);
+        }
+    }
+    update_fade_timer(app);
 }
 
 fn set_ghost(app: &mut App, ghost: bool) {
@@ -775,6 +812,7 @@ fn set_ghost(app: &mut App, ghost: bool) {
         focus_overlay_under_cursor(app);
         log("ghost off");
     }
+    update_input_hooks(app);
     update_tray(app);
 }
 
@@ -835,7 +873,9 @@ fn update_fade_timer(app: &App) {
     unsafe {
         if app.active && animating {
             SetTimer(first.hwnd, FADE_TIMER, 16, None);
-        } else if app.active && app.state.auto_fade.is_some() {
+        } else if app.active
+            && (app.state.auto_fade.is_some() || app.overlays.iter().any(|o| o.canvas.ticking()))
+        {
             SetTimer(first.hwnd, FADE_TIMER, 50, None);
         } else {
             KillTimer(first.hwnd, FADE_TIMER);
@@ -1311,6 +1351,7 @@ fn run_action(app: &mut App, index: usize, action: Action) {
             }
             render_palette(app);
             save_settings(app);
+            update_input_hooks(app);
         }
     }
 }
@@ -1466,6 +1507,7 @@ fn on_tray_message(hwnd: HWND, msg: u32, lparam: LPARAM) -> bool {
             }
             _ => {}
         },
+        input::WM_INPUT_SEEN => with_app(on_input_seen),
         WM_RELOAD_SETTINGS => with_app(|app| {
             log("settings changed by the settings window");
             reload_settings(app);

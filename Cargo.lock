@@ -2449,6 +2449,7 @@ name = "screenpen"
 version = "0.2.0"
 dependencies = [
  "arboard",
+ "block2 0.6.2",
  "eframe",
  "ksni",
  "libc",
