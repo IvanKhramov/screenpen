@@ -380,6 +380,7 @@ fn load_settings(app: &mut App) {
     app.state = state;
     app.language = settings.language.clone();
     app.lang = settings.lang(system_lang());
+    app.state.lang = app.lang;
     let items = settings.palette_items();
     app.palette.palette.items = if items.is_empty() {
         Item::defaults()

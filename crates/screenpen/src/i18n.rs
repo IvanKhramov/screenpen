@@ -212,6 +212,10 @@ impl Lang {
                 format!("{} {size}", fixed("Width", "Толщина"))
             }
             Action::Thicker => fixed("Thicker", "Толще"),
+            Action::Preset(i) => format!("{} {}", fixed("Style", "Стиль"), i + 1),
+            Action::SavePreset(i) => {
+                format!("{} {}", fixed("Save style", "Сохранить стиль"), i + 1)
+            }
             Action::TextSmaller => fixed("Smaller text", "Текст мельче"),
             Action::TextBigger => fixed("Bigger text", "Текст крупнее"),
             Action::Bold => fixed("Bold text", "Жирный текст"),

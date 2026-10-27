@@ -197,6 +197,9 @@ pub enum Action {
     Thicker,
     /// A width preset (0-2), see `WIDTH_PRESETS`.
     Width(u8),
+    /// A saved tool, color and width (0-2), and saving the current ones there.
+    Preset(u8),
+    SavePreset(u8),
     /// Text size, for the text being typed, the selected text or new text.
     TextSmaller,
     TextBigger,
@@ -243,6 +246,8 @@ impl Action {
             Action::Tool(t) => format!("tool.{}", t.name()),
             Action::Color(i) => format!("color.{}", i + 1),
             Action::Width(i) => format!("width.{}", i + 1),
+            Action::Preset(i) => format!("preset.{}", i + 1),
+            Action::SavePreset(i) => format!("save_preset.{}", i + 1),
             other => {
                 let s = match other {
                     Action::Thinner => "thinner",
@@ -268,7 +273,11 @@ impl Action {
                     Action::ToggleDrawing => "toggle_drawing",
                     Action::ExitGhost => "exit_ghost",
                     Action::Quit => "quit",
-                    Action::Tool(_) | Action::Color(_) | Action::Width(_) => unreachable!(),
+                    Action::Tool(_)
+                    | Action::Color(_)
+                    | Action::Width(_)
+                    | Action::Preset(_)
+                    | Action::SavePreset(_) => unreachable!(),
                 };
                 s.to_string()
             }
@@ -330,6 +339,17 @@ impl Default for Shortcuts {
             (Action::Width(0), None),
             (Action::Width(1), None),
             (Action::Width(2), None),
+        ]);
+        for i in 0..3u8 {
+            let digit = Char((b'1' + i) as char);
+            let shift = Chord {
+                shift: true,
+                ..Chord::key(digit)
+            };
+            b.push((Action::Preset(i), Some(shift)));
+            b.push((Action::SavePreset(i), Some(Chord::ctrl_shift(digit))));
+        }
+        b.extend([
             (Action::TextSmaller, Some(Chord::ctrl(Char('-')))),
             (Action::TextBigger, Some(Chord::ctrl(Char('=')))),
             (Action::Bold, Some(Chord::ctrl(Char('B')))),

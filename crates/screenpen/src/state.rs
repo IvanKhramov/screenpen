@@ -3,6 +3,8 @@
 use screenpen_core::shortcuts::{next_text_size, next_width};
 use screenpen_core::{Blend, Rgba, Shortcuts, Style, TextStyle, ToolKind};
 
+use crate::i18n::Lang;
+
 /// How much the screen behind the ink is darkened while drawing.
 pub const DIM_LEVELS: [(f32, &str); 4] = [
     (0.0, "Off"),
@@ -13,6 +15,34 @@ pub const DIM_LEVELS: [(f32, &str); 4] = [
 
 /// Auto-fade presets in seconds.
 pub const FADE_SECONDS: [f32; 4] = [3.0, 5.0, 10.0, 30.0];
+
+/// A saved tool, color and width, picked with Shift+1..3.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Preset {
+    pub tool: ToolKind,
+    pub color_index: usize,
+    pub width: f32,
+}
+
+impl Preset {
+    pub const DEFAULTS: [Preset; 3] = [
+        Preset {
+            tool: ToolKind::Arrow,
+            color_index: 0,
+            width: 4.0,
+        },
+        Preset {
+            tool: ToolKind::Highlighter,
+            color_index: 1,
+            width: 4.0,
+        },
+        Preset {
+            tool: ToolKind::Rectangle,
+            color_index: 2,
+            width: 4.0,
+        },
+    ];
+}
 
 pub struct ToolState {
     pub tool: ToolKind,
@@ -35,6 +65,9 @@ pub struct ToolState {
     pub theme: String,
     /// Shortcut letters in the palette button corners.
     pub key_badges: bool,
+    pub presets: [Preset; 3],
+    /// For messages drawn on the screen.
+    pub lang: Lang,
 }
 
 impl Default for ToolState {
@@ -51,6 +84,8 @@ impl Default for ToolState {
             text_size: 28.0,
             theme: "system".to_string(),
             key_badges: true,
+            presets: Preset::DEFAULTS,
+            lang: Lang::En,
             text_style: TextStyle::default(),
             ui_scale: 1.0,
         }

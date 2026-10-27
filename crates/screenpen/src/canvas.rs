@@ -29,7 +29,8 @@ use tiny_skia::{
     Stroke, StrokeDash, Transform,
 };
 
-use crate::state::ToolState;
+use crate::i18n::Lang;
+use crate::state::{Preset, ToolState};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Mods {
@@ -97,6 +98,10 @@ const LASER_POINTS: usize = 600;
 /// Spotlight radius in points, and its limits for the wheel.
 const SPOTLIGHT_RADIUS: f32 = 140.0;
 const SPOTLIGHT_LIMITS: (f32, f32) = (40.0, 600.0);
+/// The toast: text size, distance from the top (points) and how long it shows.
+const TOAST_SIZE: f32 = 15.0;
+const TOAST_TOP: f32 = 28.0;
+const TOAST_SECONDS: f64 = 1.6;
 /// Holding the pen this still (points) for this long (seconds) straightens the stroke.
 const HOLD_SLOP: f32 = 4.0;
 const HOLD_SECONDS: f64 = 0.5;
@@ -280,6 +285,8 @@ pub struct Canvas {
     snap_hint: Option<Rect>,
     /// Pieces of the edges the magnet holds the pointer to.
     guides: Vec<(Point, Point)>,
+    /// A short message at the top of the screen, and when it appeared.
+    toast: Option<(String, f64)>,
 }
 
 impl Canvas {
@@ -311,6 +318,7 @@ impl Canvas {
             screen: None,
             snap_hint: None,
             guides: Vec::new(),
+            toast: None,
         })
     }
 
@@ -481,6 +489,13 @@ impl Canvas {
             self.laser.released = None;
         }
         let laser = self.laser.released.is_some();
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|(_, at)| now() - at >= TOAST_SECONDS)
+        {
+            self.toast = None;
+        }
         let straightened = self.tick_hold();
         let (repaint, more) = self.tick_fade();
         (repaint.union(straightened), more || laser)
@@ -488,7 +503,53 @@ impl Canvas {
 
     /// Whether something animates and needs frequent ticks (not auto-fade's slow ones).
     pub fn animating(&self) -> bool {
-        self.laser.released.is_some() || matches!(self.gesture, Gesture::Freehand { .. })
+        self.laser.released.is_some()
+            || matches!(self.gesture, Gesture::Freehand { .. })
+            || self.toast.is_some()
+    }
+
+    /// Shows `text` at the top of the screen for a moment.
+    pub fn show_toast(&mut self, text: String) {
+        self.toast = Some((text, now()));
+    }
+
+    /// Where the toast is drawn, in points, and its text path at the origin.
+    fn toast_layout(&self) -> Option<(Rect, tiny_skia::Path)> {
+        let (text, _) = self.toast.as_ref()?;
+        let path = screenpen_core::text::path(text, TOAST_SIZE, Point::default())?;
+        let b = path.bounds();
+        let (w, h) = (b.width() + TOAST_SIZE * 1.6, TOAST_SIZE * 2.2);
+        let x = (self.width as f32 / self.scale - w) / 2.0;
+        Some((Rect::new(x, TOAST_TOP, w, h), path))
+    }
+
+    fn draw_toast(&self, target: &mut PixmapMut) {
+        let Some((started, (rect, path))) =
+            self.toast.as_ref().map(|t| t.1).zip(self.toast_layout())
+        else {
+            return;
+        };
+        let age = now() - started;
+        let alpha = ((TOAST_SECONDS - age) / 0.3).clamp(0.0, 1.0) as f32;
+        let t = self.transform();
+        let mut paint = Paint {
+            anti_alias: true,
+            ..Paint::default()
+        };
+        if let Some(pill) = rounded_rect(rect, rect.height / 2.0) {
+            paint.set_color(skia_color(
+                Rgba::rgb(0.11, 0.11, 0.12).with_alpha(0.92 * alpha),
+                self.order,
+            ));
+            target.fill_path(&pill, &paint, FillRule::Winding, t, None);
+        }
+        let b = path.bounds();
+        let dx = rect.x + (rect.width - b.width()) / 2.0 - b.left();
+        let dy = rect.y + (rect.height - b.height()) / 2.0 - b.top();
+        if let Some(glyphs) = path.clone().transform(Transform::from_translate(dx, dy)) {
+            paint.set_color(skia_color(Rgba::WHITE.with_alpha(alpha), self.order));
+            target.fill_path(&glyphs, &paint, FillRule::Winding, t, None);
+        }
     }
 
     /// A stroke held still for a moment becomes a line, rectangle or ellipse.
@@ -613,6 +674,9 @@ impl Canvas {
         if let Some(b) = self.snap_hint {
             add(b);
         }
+        if let Some((b, _)) = self.toast_layout() {
+            add(b);
+        }
         for (a, b) in &self.guides {
             add(Rect::from_points(*a, *b));
         }
@@ -669,6 +733,7 @@ impl Canvas {
         let t = self.transform();
         self.draw_spotlight(target, region);
         self.draw_laser(target);
+        self.draw_toast(target);
         match &self.gesture {
             Gesture::Shape {
                 preview: Some(a), ..
@@ -1763,6 +1828,43 @@ impl Canvas {
                     (full(self), None)
                 }
             }
+            Action::Preset(i) => {
+                let Some(&p) = state.presets.get(i as usize) else {
+                    return (Repaint::None, None);
+                };
+                state.tool = p.tool;
+                state.color_index = p.color_index.min(state.colors.len() - 1);
+                state.width = p.width;
+                self.selection.clear();
+                let what = format!("{}: {}", state.lang.action(action), state.lang.tool(p.tool));
+                self.show_toast(what);
+                (
+                    self.cancel().union(Repaint::Full),
+                    Some(Request::StateChanged),
+                )
+            }
+            Action::SavePreset(i) => {
+                let Some(slot) = state.presets.get_mut(i as usize) else {
+                    return (Repaint::None, None);
+                };
+                *slot = Preset {
+                    tool: state.tool,
+                    color_index: state.color_index,
+                    width: state.width,
+                };
+                let saved = if state.lang == Lang::Ru {
+                    "сохранён"
+                } else {
+                    "saved"
+                };
+                let what = format!(
+                    "{} {saved}: {}",
+                    state.lang.action(Action::Preset(i)),
+                    state.lang.tool(state.tool)
+                );
+                self.show_toast(what);
+                (Repaint::None, Some(Request::StateChanged))
+            }
             Action::TextSmaller | Action::TextBigger => {
                 let bigger = action == Action::TextBigger;
                 self.restyle_text(
@@ -2134,6 +2236,26 @@ mod tests {
         drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
         let [a] = c.doc.annotations() else { panic!() };
         assert_eq!(bounds(a), Some(Rect::new(40.0, 30.0, 120.0, 90.0)));
+    }
+
+    #[test]
+    fn presets_pick_and_save_a_style() {
+        let mut c = canvas();
+        let mut state = ToolState::default();
+        let (_, req) = c.perform(&mut state, Action::Preset(1));
+        assert_eq!(req, Some(Request::StateChanged));
+        assert_eq!((state.tool, state.color_index), (ToolKind::Highlighter, 1));
+        assert!(c.animating(), "the toast shows");
+
+        state.tool = ToolKind::Pixelate;
+        state.width = 9.0;
+        c.perform(&mut state, Action::SavePreset(0));
+        state.tool = ToolKind::Pen;
+        c.perform(&mut state, Action::Preset(0));
+        assert_eq!((state.tool, state.width), (ToolKind::Pixelate, 9.0));
+        let mut target = Pixmap::new(400, 300).unwrap();
+        c.paint(&mut target.as_mut(), Repaint::Full);
+        assert!(opaque(&target, 200, 70), "toast at the top");
     }
 
     #[test]

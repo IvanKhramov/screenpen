@@ -906,6 +906,12 @@ fn draw_icon(
                 .and_then(PathBuilder::from_oval);
             stroke(pixmap, oval, ink, 2.0, t, o);
         }
+        Action::Preset(i) | Action::SavePreset(i) => {
+            let r = tiny_skia::Rect::from_xywh(3.0, 3.0, 14.0, 14.0)
+                .and_then(|r| rounded(Rect::from_skia(r), 3.5));
+            stroke(pixmap, r, ink, 1.6, t, o);
+            fill(pixmap, glyph(cell, &(i + 1).to_string(), 11.0), ink, t, o);
+        }
         Action::Tool(ToolKind::Pixelate) => {
             // A checkerboard of blocks.
             let c = cell.center();
@@ -1582,6 +1588,25 @@ pub fn render_cheat_sheet(
                 format!("{}–{}", chord_label(colors[0]), chord_label(colors[8])),
             ),
             Action::Color(_) if fold_colors => continue,
+            Action::Preset(0) | Action::SavePreset(0) => {
+                let last = if b.action == Action::Preset(0) {
+                    Action::Preset(2)
+                } else {
+                    Action::SavePreset(2)
+                };
+                let range = match shortcuts.chord(last) {
+                    Some(end) => format!("{}–{}", chord_label(c), end.key),
+                    None => chord_label(c),
+                };
+                let name = match (b.action, ru) {
+                    (Action::Preset(_), true) => "Стили",
+                    (Action::Preset(_), false) => "Styles",
+                    (_, true) => "Сохранить стиль",
+                    (_, false) => "Save style",
+                };
+                (name.to_string(), range)
+            }
+            Action::Preset(_) | Action::SavePreset(_) => continue,
             action => (lang.action(action), chord_label(c)),
         };
         columns[sheet_group(b.action)].push(row);

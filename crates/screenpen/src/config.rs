@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::i18n::Lang;
 use crate::palette::Item;
-use crate::state::{ToolState, UI_SCALE};
+use crate::state::{Preset, ToolState, UI_SCALE};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -42,8 +42,17 @@ pub struct Settings {
     /// Shortcut letters in the palette button corners.
     pub key_badges: bool,
     pub palette: PaletteSettings,
+    /// Shift+1..3: tool name, 1-based color and width.
+    pub presets: Vec<PresetSettings>,
     /// Action name to chord, e.g. "tool.pen" = "P". An empty string turns it off.
     pub shortcuts: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PresetSettings {
+    pub tool: String,
+    pub color: usize,
+    pub width: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -214,6 +223,15 @@ impl Settings {
             theme: state.theme.clone(),
             key_badges: state.key_badges,
             palette: palette.clone(),
+            presets: state
+                .presets
+                .iter()
+                .map(|p| PresetSettings {
+                    tool: p.tool.name().to_string(),
+                    color: p.color_index + 1,
+                    width: p.width,
+                })
+                .collect(),
             shortcuts: state
                 .shortcuts
                 .bindings
@@ -262,6 +280,18 @@ impl Settings {
             _ => "system".to_string(),
         };
         state.key_badges = self.key_badges;
+        for (slot, p) in state.presets.iter_mut().zip(&self.presets) {
+            match ToolKind::from_name(&p.tool) {
+                Some(tool) => {
+                    *slot = Preset {
+                        tool,
+                        color_index: p.color.clamp(1, state.colors.len()) - 1,
+                        width: p.width.clamp(1.0, 64.0),
+                    }
+                }
+                None => problems.push(format!("presets: unknown tool {:?}", p.tool)),
+            }
+        }
         for (name, text) in &self.shortcuts {
             let Some(action) = Action::from_name(name) else {
                 problems.push(format!("shortcuts: unknown action {name:?}"));
