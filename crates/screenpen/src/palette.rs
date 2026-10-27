@@ -1126,12 +1126,9 @@ fn draw_icon(
                 t,
                 o,
             );
-            line(
-                pixmap,
-                &[(c.x, c.y - 4.5), (c.x, c.y), (c.x + 3.0, c.y + 2.0)],
-                1.8,
-            );
-            line(pixmap, &[(c.x - 2.5, 2.0), (c.x + 2.5, 2.0)], 1.8);
+            // `line` takes points inside the cell.
+            line(pixmap, &[(10.0, 7.0), (10.0, 11.0), (13.0, 13.0)], 1.8);
+            line(pixmap, &[(7.5, 2.0), (12.5, 2.0)], 1.8);
         }
         Action::Whiteboard => {
             stroke(
@@ -1607,13 +1604,21 @@ fn fit(s: &str, size: f32, width: f32) -> String {
 fn sheet_group(a: Action) -> usize {
     match a {
         Action::Tool(ToolKind::Laser) => 1,
-        Action::Tool(_) | Action::Color(_) | Action::Thinner | Action::Thicker => 0,
+        Action::Tool(_)
+        | Action::Color(_)
+        | Action::Thinner
+        | Action::Thicker
+        | Action::Preset(_)
+        | Action::SavePreset(_)
+        | Action::Caption => 0,
         Action::Ghost
         | Action::Whiteboard
         | Action::Spotlight
         | Action::Magnifier
         | Action::Freeze
         | Action::Snapshot
+        | Action::Timer
+        | Action::ShowInput
         | Action::ToggleDrawing
         | Action::ExitGhost
         | Action::Quit

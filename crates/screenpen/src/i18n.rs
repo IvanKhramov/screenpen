@@ -123,16 +123,16 @@ impl Lang {
             (En, CheatSheetClose) => "Press ? or Esc to close",
             (Ru, CheatSheetClose) => "Нажмите ? или Esc, чтобы закрыть",
             (En, WithPen) => {
-                "With the pen: Ctrl rectangle, Ctrl+Alt ellipse, Alt arrow, Shift straight/square. Right button erases."
+                "Pen: Ctrl rectangle, Ctrl+Alt ellipse, Alt arrow, Shift straight. Hold still at the end to straighten. Right button erases."
             }
             (Ru, WithPen) => {
-                "Пером: Ctrl прямоугольник, Ctrl+Alt эллипс, Alt стрелка, Shift ровно/квадрат. Правая кнопка стирает."
+                "Пером: Ctrl прямоугольник, Ctrl+Alt эллипс, Alt стрелка, Shift ровно. Задержите перо, и штрих выпрямится. Правая кнопка стирает."
             }
             (En, Magnet) => {
-                "Magnet: hold Ctrl and shapes stick to windows and panels. Ctrl+click frames the one under the pointer."
+                "Magnet: with Ctrl shapes stick to windows and panels. Ctrl+click frames a box, pixelates it (B) or lights it (spotlight)."
             }
             (Ru, Magnet) => {
-                "Магнит: с Ctrl фигуры липнут к краям окон и панелей. Ctrl+клик обводит блок под курсором."
+                "Магнит: с Ctrl фигуры липнут к краям окон. Ctrl+клик обводит блок, с размытием прячет, с прожектором высвечивает."
             }
             (En, Grip) => "Drag to move. Double-click to rotate",
             (Ru, Grip) => "Перетащите, чтобы подвинуть. Двойной клик поворачивает",

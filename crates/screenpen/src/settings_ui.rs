@@ -179,6 +179,7 @@ struct Edited {
     theme: String,
     key_badges: bool,
     timer_minutes: f32,
+    show_input: bool,
 }
 
 fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
@@ -240,6 +241,7 @@ impl SettingsApp {
             theme: self.state.theme.clone(),
             key_badges: self.state.key_badges,
             timer_minutes: self.state.timer_minutes,
+            show_input: self.state.show_input,
         }
     }
 
@@ -302,6 +304,9 @@ impl SettingsApp {
         }
         if now.timer_minutes != before.timer_minutes {
             state.timer_minutes = now.timer_minutes;
+        }
+        if now.show_input != before.show_input {
+            state.show_input = now.show_input;
         }
         let settings = Settings::capture(
             &state,
@@ -795,6 +800,14 @@ impl SettingsApp {
                         lang,
                         "Hide the palette from viewers (they see only the drawing)",
                         "Прятать палитру от зрителей (они видят только рисунок)",
+                    ),
+                );
+                ui.checkbox(
+                    &mut self.state.show_input,
+                    tr(
+                        lang,
+                        "In mouse mode, show clicks and shortcuts (never plain typing)",
+                        "В режиме «Мышь» показывать клики и сочетания клавиш (обычный набор не виден)",
                     ),
                 );
             },

@@ -77,15 +77,18 @@ existing text with the select tool to edit it.
 | Ctrl+Alt+Shift+A | Drawing on / off |
 | P · H · L · A | Pen · Highlighter · Line · Arrow |
 | R · O · T · N | Rectangle · Ellipse · Text · Numbered badge |
-| E · V · K | Eraser · Select · Laser pointer |
+| E · V · K · B | Eraser · Select · Laser pointer · Pixelate (hides what's under it) |
 | 1-9 | Color (recolors the selection when one exists) |
 | `[` · `]` · Ctrl+wheel | Thinner · Thicker |
+| Shift+1-3 · Ctrl+Shift+1-3 | Saved style (tool, color, width) · save the current one there |
+| Enter | Right after an arrow: type a caption at its tail |
 | C | Clear |
 | Ctrl+Z · Ctrl+Shift+Z | Undo · Redo |
 | Ctrl+A · Ctrl+] · Delete | Select all · Bring to front · Delete the selection |
 | W · S · F | Whiteboard · Spotlight (wheel resizes it) · Freeze the screen |
 | M | Magnifier (wheel zooms; Windows and macOS) |
 | Ctrl+S | Screenshot with the drawing: saved to Pictures/screenpen and copied |
+| Ctrl+T | Timer in the corner (length in Settings; click it to pause) |
 | G · Ctrl+Alt+Shift+G | Mouse mode: the drawing stays, clicks go through · back to drawing |
 | PgUp · PgDn · arrows | Sent to the window behind (flip slides; Windows and Linux X11) |
 | Esc | Finish typing, deselect, or stop drawing |
@@ -95,13 +98,20 @@ existing text with the select tool to edit it.
 With the pen: hold Ctrl for a rectangle, Ctrl+Alt for an ellipse, Alt for an arrow. Shift makes
 lines snap to 45° and shapes square. Alt with the arrow tool bends the arrow. Hold the right mouse
 button (or use a pen's eraser end) to erase with any tool. Pen pressure changes the width.
+Hold the pen still for half a second at the end of a stroke and a wobbly line, box or circle
+becomes a straight line, rectangle or ellipse.
 
-Magnet: with Ctrl held, rectangles, ellipses, lines and arrows stick to the edges of windows,
-panels and buttons on the screen, and pink guides show the edge. Ctrl+click without dragging
-frames the box under the pointer; a dashed outline shows it before you click. The magnet looks at
+Magnet: with Ctrl held, rectangles, ellipses, lines, arrows and pixelation stick to the edges of
+windows, panels and buttons on the screen, and cyan guides show the edge. Ctrl+click without
+dragging frames the box under the pointer (pixelates it with B; with the spotlight on, lights just
+that box); a dashed outline shows it before you click. The magnet and pixelation look at
 a capture of the screen: on macOS it needs the Screen Recording permission, on X11 the drawing
 blinks once when it takes it, and native Wayland overlays (KDE, Sway, Hyprland) have no capture,
-so there is no magnet there.
+so there is no magnet there (pixelation draws plain grey blocks instead).
+
+Show clicks and keys (More menu): in mouse mode, a ring shows where each click lands and a pill in
+the corner shows shortcuts like Ctrl+C or F5. Plain typing is never shown. Windows and X11 only
+need it turned on; macOS shows keys after Accessibility is allowed for screenpen; Wayland can't.
 Keys are physical: P is the pen on any keyboard layout. Every shortcut can be changed or turned
 off in Settings → Shortcuts.
 
