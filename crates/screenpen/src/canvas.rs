@@ -12,7 +12,9 @@ use std::collections::HashSet;
 use std::f32::consts::SQRT_2;
 
 use screenpen_core::annotation::{AnnotationId, now};
-use screenpen_core::render::{ChannelOrder, bounds, draw, hit_test, segment_outline, skia_color};
+use screenpen_core::render::{
+    ChannelOrder, bounds, draw, hit_test, rounded_rect, segment_outline, skia_color,
+};
 use screenpen_core::shortcuts::next_text_size;
 use screenpen_core::snap::{Edge, SnapMap, Snapped};
 use screenpen_core::text_edit::{Motion, TextBuffer};
@@ -94,6 +96,9 @@ const LASER_POINTS: usize = 600;
 /// Spotlight radius in points, and its limits for the wheel.
 const SPOTLIGHT_RADIUS: f32 = 140.0;
 const SPOTLIGHT_LIMITS: (f32, f32) = (40.0, 600.0);
+/// Room around a lit box, and its corner radius, in points.
+const FOCUS_PAD: f32 = 6.0;
+const FOCUS_RADIUS: f32 = 10.0;
 
 #[derive(Default)]
 struct Laser {
@@ -255,6 +260,8 @@ pub struct Canvas {
     backdrop: Option<Pixmap>,
     /// Center (None until the pointer is seen) and radius, while the spotlight is on.
     spotlight: Option<(Option<Point>, f32)>,
+    /// A box the spotlight lights instead of the circle (Ctrl+click on a panel).
+    focus: Option<Rect>,
     /// Edges of the screen under the ink, for the magnet; None until first needed.
     snap: Option<SnapMap>,
     /// The box a Ctrl+click would frame, under the pointer.
@@ -287,6 +294,7 @@ impl Canvas {
             laser: Laser::default(),
             backdrop: None,
             spotlight: None,
+            focus: None,
             snap: None,
             snap_hint: None,
             guides: Vec::new(),
@@ -587,7 +595,9 @@ impl Canvas {
             add(Rect::new(p.x - 14.0, p.y - 14.0, 28.0, 28.0));
         }
         // The veil outside the circle doesn't change as it moves; only the circle does.
-        if let Some((Some(c), radius)) = self.spotlight {
+        if let Some((Some(c), radius)) = self.spotlight
+            && self.focus.is_none()
+        {
             add(Rect::new(
                 c.x - radius,
                 c.y - radius,
@@ -769,6 +779,7 @@ impl Canvas {
             return Repaint::None;
         }
         self.spotlight = on.then_some((None, SPOTLIGHT_RADIUS));
+        self.focus = None;
         Repaint::Full
     }
 
@@ -787,7 +798,12 @@ impl Canvas {
         };
         let mut pb = PathBuilder::new();
         pb.push_rect(region.to_rect());
-        if let Some(c) = center {
+        if let Some(f) = self.focus {
+            let hole = self.to_pixels(f.inset(-FOCUS_PAD));
+            if let Some(hole) = rounded_rect(hole, FOCUS_RADIUS * self.scale) {
+                pb.push_path(&hole);
+            }
+        } else if let Some(c) = center {
             let s = self.scale;
             pb.push_circle(c.x * s, c.y * s, radius * s);
         }
@@ -846,6 +862,9 @@ impl Canvas {
         let at = self.to_points(&p);
         self.snap_hint = None;
         self.guides.clear();
+        if button == Button::Left && p.mods.ctrl && self.spotlight.is_some() {
+            return self.toggle_focus(at);
+        }
         if button == Button::Right {
             // Hold the right button to erase with any tool.
             return self.begin_erase(state, at);
@@ -1040,13 +1059,14 @@ impl Canvas {
         self.snap_hint = None;
         self.guides.clear();
         if matches!(self.gesture, Gesture::Idle)
-            && magnet(state, p.mods)
+            && self.magnet_on(state, p.mods)
             && let Some(map) = &self.snap
         {
-            let frames = matches!(
-                state.tool,
-                ToolKind::Pen | ToolKind::Rectangle | ToolKind::Ellipse
-            );
+            let frames = self.spotlight.is_some()
+                || matches!(
+                    state.tool,
+                    ToolKind::Pen | ToolKind::Rectangle | ToolKind::Ellipse
+                );
             self.snap_hint = frames.then(|| map.box_at(at)).flatten();
             let s = map.snap(at, MAGNET_RADIUS);
             self.guides = guide_lines(s.point, (s.x, s.y));
@@ -1166,7 +1186,20 @@ impl Canvas {
     /// Whether the screen under the ink is needed before this pointer event:
     /// call `set_screen` first.
     pub fn needs_screen(&self, state: &ToolState, mods: Mods) -> bool {
-        !self.asleep && self.snap.is_none() && magnet(state, mods)
+        !self.asleep && self.snap.is_none() && self.magnet_on(state, mods)
+    }
+
+    /// Ctrl with a shape tool, or with the spotlight on (to light a box).
+    fn magnet_on(&self, state: &ToolState, mods: Mods) -> bool {
+        magnet(state, mods) || (mods.ctrl && self.spotlight.is_some())
+    }
+
+    /// With the spotlight on, Ctrl+click lights the box under the pointer instead of
+    /// the circle; again on it, or where there's no box, brings the circle back.
+    fn toggle_focus(&mut self, at: Point) -> Repaint {
+        let b = self.snap.as_ref().and_then(|m| m.box_at(at));
+        self.focus = if b == self.focus { None } else { b };
+        Repaint::Full
     }
 
     /// The screen under the ink for the magnet, or None when it can't be captured.
@@ -1949,6 +1982,26 @@ mod tests {
         state.tool = ToolKind::Rectangle;
         drag(&mut c, &state, &[with(CTRL, 20., 20.)]);
         assert!(c.doc.annotations().is_empty());
+    }
+
+    #[test]
+    fn spotlight_lights_a_box_on_ctrl_click() {
+        let mut c = canvas();
+        let state = ToolState::default();
+        c.set_spotlight(true);
+        assert!(c.needs_screen(&state, CTRL));
+        c.set_screen(Some(&panel_screen()));
+        let mut target = Pixmap::new(400, 300).unwrap();
+        drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
+        assert!(c.doc.annotations().is_empty(), "nothing drawn");
+        assert_eq!(c.focus, Some(Rect::new(40.0, 30.0, 120.0, 90.0)));
+        c.hover(&state, at(20., 20.));
+        c.paint(&mut target.as_mut(), Repaint::Full);
+        let dark = |x, y| target.pixel(x, y).unwrap().alpha() > 100;
+        assert!(!dark(200, 150) && dark(20, 20) && !dark(85, 65));
+        // Again on the same box: back to the circle.
+        drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
+        assert_eq!(c.focus, None);
     }
 
     #[test]
