@@ -16,7 +16,18 @@ use screenpen_core::render::ChannelOrder;
 
 pub const TITLE: &str = "screenpen settings";
 
+/// Starts the settings window; `welcome` opens it on the getting-started page.
+pub fn spawn(welcome: bool) -> std::io::Result<()> {
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command.arg("--settings");
+    if welcome {
+        command.arg("--welcome");
+    }
+    command.spawn().map(|_| ())
+}
+
 pub fn run() {
+    let welcome = std::env::args().any(|a| a == "--welcome");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(TITLE)
@@ -30,7 +41,11 @@ pub fn run() {
         options,
         Box::new(move |cc| {
             install_style(&cc.egui_ctx);
-            Ok(Box::new(SettingsApp::load(path)))
+            let mut app = SettingsApp::load(path);
+            if welcome {
+                app.tab = Tab::Welcome;
+            }
+            Ok(Box::new(app))
         }),
     ) {
         eprintln!("screenpen settings: {e}");
@@ -87,8 +102,10 @@ fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
         .inner_margin(16)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).strong().size(15.0));
-            ui.add_space(4.0);
+            if !title.is_empty() {
+                ui.label(RichText::new(title).strong().size(15.0));
+                ui.add_space(4.0);
+            }
             add(ui);
         });
     ui.add_space(12.0);
@@ -96,6 +113,7 @@ fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    Welcome,
     General,
     Text,
     Shortcuts,
@@ -340,6 +358,7 @@ impl SettingsApp {
                 ui.label(RichText::new(tr(lang, "Settings", "Настройки")).weak());
                 ui.add_space(14.0);
                 for (tab, en, ru) in [
+                    (Tab::Welcome, "Getting started", "Как пользоваться"),
                     (Tab::General, "General", "Общие"),
                     (Tab::Palette, "Palette", "Палитра"),
                     (Tab::Text, "Text", "Текст"),
@@ -377,6 +396,7 @@ impl SettingsApp {
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| match self.tab {
+                        Tab::Welcome => self.welcome(ui, lang),
                         Tab::General => self.general(ui, lang),
                         Tab::Text => self.text(ui, lang),
                         Tab::Shortcuts => self.shortcuts(ui, lang),
@@ -395,6 +415,7 @@ impl SettingsApp {
         };
         *frame += 1;
         let tabs = [
+            Tab::Welcome,
             Tab::General,
             Tab::Text,
             Tab::Shortcuts,
@@ -424,6 +445,153 @@ impl SettingsApp {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Screenshot(save));
         }
+    }
+}
+
+// MARK: welcome
+
+/// Keys as chips: "Ctrl+Alt+Shift+A" becomes four of them.
+fn keys(ui: &mut egui::Ui, chord: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        for key in chord.split('+').filter(|k| !k.is_empty()) {
+            egui::Frame::new()
+                .fill(ui.visuals().widgets.inactive.bg_fill)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.noninteractive.bg_stroke.color,
+                ))
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(9, 4))
+                .show(ui, |ui| ui.label(RichText::new(key).strong().size(15.0)));
+        }
+    });
+}
+
+impl SettingsApp {
+    fn welcome(&mut self, ui: &mut egui::Ui, lang: Lang) {
+        let chord = |a: Action| {
+            self.state
+                .shortcuts
+                .chord(a)
+                .map(chord_label)
+                .unwrap_or_else(|| lang.t(crate::i18n::T::NoShortcut).to_string())
+        };
+        let (toggle, mouse, help) = (
+            chord(Action::ToggleDrawing),
+            chord(Action::Ghost),
+            chord(Action::Help),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(tr(
+                lang,
+                "Draw on top of anything",
+                "Рисуйте поверх чего угодно",
+            ))
+            .strong()
+            .size(24.0),
+        );
+        ui.label(
+            RichText::new(tr(
+                lang,
+                "Slides, a browser, a call with screen sharing. Three things to know:",
+                "Слайды, браузер, звонок с демонстрацией экрана. Нужно знать три вещи:",
+            ))
+            .weak()
+            .size(14.0),
+        );
+        ui.add_space(14.0);
+        let step =
+            |n: &str, title: &str| RichText::new(format!("{n}   {title}")).strong().size(15.0);
+        card(ui, "", |ui| {
+            ui.label(step(
+                "1",
+                tr(
+                    lang,
+                    "Turn drawing on and off",
+                    "Включите и выключите рисование",
+                ),
+            ));
+            ui.add_space(4.0);
+            keys(ui, &toggle);
+            ui.label(
+                RichText::new(tr(
+                    lang,
+                    "Or click the screenpen icon in the tray. The palette appears at the bottom of the screen.",
+                    "Или кликните по значку screenpen в трее. Внизу экрана появится палитра.",
+                ))
+                .weak(),
+            );
+        });
+        card(ui, "", |ui| {
+            ui.label(step("2", tr(lang, "Draw", "Рисуйте")));
+            ui.add_space(6.0);
+            let items = self.settings.palette_items();
+            self.palette_preview(ui, &items);
+            ui.add_space(6.0);
+            ui.label(format!(
+                "{} {help} {}",
+                tr(
+                    lang,
+                    "The letter on a button is its key: P pen, T text, A arrow, 1-6 colors. Press",
+                    "Буква на кнопке это её клавиша: P перо, T текст, A стрелка, 1-6 цвета. Нажмите",
+                ),
+                tr(lang, "to see them all.", "и увидите все клавиши."),
+            ));
+            ui.label(
+                RichText::new(tr(
+                    lang,
+                    "The right mouse button erases. Ctrl+Z undoes.",
+                    "Правая кнопка мыши стирает. Ctrl+Z отменяет.",
+                ))
+                .weak(),
+            );
+        });
+        card(ui, "", |ui| {
+            ui.label(step(
+                "3",
+                tr(lang, "Get back to work", "Вернитесь к работе"),
+            ));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                keys(ui, &mouse);
+                ui.label(tr(
+                    lang,
+                    "or the Mouse button: the drawing stays, clicks go to your apps.",
+                    "или кнопка «Мышь»: рисунок остаётся, клики идут в приложения.",
+                ));
+            });
+            ui.horizontal(|ui| {
+                keys(ui, "Esc");
+                ui.label(tr(
+                    lang,
+                    "or × on the palette: drawing off, everything is hidden.",
+                    "или × на палитре: рисование выключено, всё убрано.",
+                ));
+            });
+        });
+        ui.horizontal(|ui| {
+            let start = egui::Button::new(
+                RichText::new(tr(lang, "Got it", "Понятно"))
+                    .strong()
+                    .color(Color32::WHITE),
+            )
+            .fill(ACCENT)
+            .min_size(egui::vec2(120.0, 32.0));
+            if ui.add(start).clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            if ui
+                .add(
+                    egui::Button::new(tr(lang, "Settings", "Настройки"))
+                        .min_size(egui::vec2(110.0, 32.0)),
+                )
+                .clicked()
+            {
+                self.tab = Tab::General;
+            }
+        });
     }
 }
 

@@ -171,6 +171,10 @@ pub fn run() {
         if first_run {
             // Write the defaults so there's a file to look at and edit.
             save_settings(app);
+            // And show how it works.
+            if let Err(e) = crate::settings_ui::spawn(true) {
+                log(&format!("welcome window not started: {e}"));
+            }
         }
         autostart::refresh();
         let taken = register_hotkeys(app);
