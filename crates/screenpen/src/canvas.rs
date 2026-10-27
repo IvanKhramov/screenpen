@@ -182,6 +182,15 @@ struct TextEdit {
     color: Rgba,
     /// The annotation being edited, hidden from the cache meanwhile.
     editing: Option<AnnotationId>,
+    /// Which x the text keeps as it grows: its left side (`origin`), or this one.
+    anchor: TextAnchor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TextAnchor {
+    Left,
+    Right(f32),
+    Center(f32),
 }
 
 /// The shortcuts that still work while typing: text size and style with Ctrl or Alt
@@ -287,6 +296,8 @@ pub struct Canvas {
     guides: Vec<(Point, Point)>,
     /// A short message at the top of the screen, and when it appeared.
     toast: Option<(String, f64)>,
+    /// The arrow just drawn (tail, head), for Enter to caption it.
+    last_arrow: Option<(Point, Point)>,
 }
 
 impl Canvas {
@@ -319,6 +330,7 @@ impl Canvas {
             snap_hint: None,
             guides: Vec::new(),
             toast: None,
+            last_arrow: None,
         })
     }
 
@@ -619,6 +631,7 @@ impl Canvas {
         if self.asleep {
             return None;
         }
+        self.realign_text();
         let overlay = self.overlay_bounds();
         let region = match repaint.union(self.painted_overlay.map_or(Repaint::None, Repaint::Rect))
         {
@@ -971,6 +984,7 @@ impl Canvas {
         let at = self.to_points(&p);
         self.snap_hint = None;
         self.guides.clear();
+        self.last_arrow = None;
         if button == Button::Left && p.mods.ctrl && self.spotlight.is_some() {
             return self.toggle_focus(at);
         }
@@ -1233,6 +1247,11 @@ impl Canvas {
                 ..
             } => {
                 self.guides.clear();
+                if let Some(Geometry::Arrow { from, to, .. }) =
+                    preview.as_ref().map(|a| &a.geometry)
+                {
+                    self.last_arrow = Some((*from, *to));
+                }
                 match preview {
                     Some(a) => self.commit(a),
                     None if magnet(state, p.mods) => self.frame_box(state, tool, pressed),
@@ -1514,8 +1533,69 @@ impl Canvas {
             style: state.text_style.clone(),
             color: state.color(),
             editing: None,
+            anchor: TextAnchor::Left,
         });
         Repaint::None
+    }
+
+    /// Enter right after an arrow: a caption at its tail, on the side away from the
+    /// head, keeping to the tail as it grows.
+    fn caption(&mut self, state: &ToolState) -> Repaint {
+        let Some((from, to)) = self.last_arrow.take() else {
+            return Repaint::None;
+        };
+        let committed = self.end_text();
+        let font_size = state.font_size();
+        let line = screenpen_core::text::line_height(font_size);
+        let len = from.distance(to).max(1.0);
+        let d = ((from.x - to.x) / len, (from.y - to.y) / len);
+        let gap = font_size * 0.4;
+        let a = Point::new(from.x + d.0 * gap, from.y + d.1 * gap);
+        let (origin, anchor) = if d.0.abs() >= d.1.abs() {
+            let y = a.y - line / 2.0;
+            if d.0 > 0.0 {
+                (Point::new(a.x, y), TextAnchor::Left)
+            } else {
+                (Point::new(a.x, y), TextAnchor::Right(a.x))
+            }
+        } else {
+            let y = if d.1 < 0.0 { a.y - line } else { a.y };
+            (Point::new(a.x, y), TextAnchor::Center(a.x))
+        };
+        self.text = Some(TextEdit {
+            origin,
+            buffer: TextBuffer::default(),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            typing: false,
+            font_size,
+            style: state.text_style.clone(),
+            color: state.color(),
+            editing: None,
+            anchor,
+        });
+        self.realign_text();
+        committed.union(Repaint::Full)
+    }
+
+    /// Moves right- or center-anchored text so it keeps to its anchor as it grows.
+    fn realign_text(&mut self) {
+        let Some(anchor) = self.text.as_ref().map(|t| t.anchor) else {
+            return;
+        };
+        let width = || {
+            self.text_annotation()
+                .and_then(|a| bounds(&a))
+                .map_or(0.0, |b| b.width)
+        };
+        let x = match anchor {
+            TextAnchor::Left => return,
+            TextAnchor::Right(x) => x - width(),
+            TextAnchor::Center(x) => x - width() / 2.0,
+        };
+        if let Some(t) = &mut self.text {
+            t.origin.x = x;
+        }
     }
 
     fn edit_text(&mut self, a: &Annotation) -> Repaint {
@@ -1539,6 +1619,7 @@ impl Canvas {
             style: style.clone(),
             color: a.style.color,
             editing: Some(a.id),
+            anchor: TextAnchor::Left,
         });
         self.rebuild_cache();
         Repaint::Full
@@ -1751,6 +1832,7 @@ impl Canvas {
 
     /// Commits the text being edited (or deletes it when emptied).
     pub fn end_text(&mut self) -> Repaint {
+        self.realign_text();
         let Some(t) = self.text.take() else {
             return Repaint::None;
         };
@@ -1828,6 +1910,7 @@ impl Canvas {
                     (full(self), None)
                 }
             }
+            Action::Caption => (self.caption(state), None),
             Action::Preset(i) => {
                 let Some(&p) = state.presets.get(i as usize) else {
                     return (Repaint::None, None);
@@ -2256,6 +2339,45 @@ mod tests {
         let mut target = Pixmap::new(400, 300).unwrap();
         c.paint(&mut target.as_mut(), Repaint::Full);
         assert!(opaque(&target, 200, 70), "toast at the top");
+    }
+
+    #[test]
+    fn enter_after_an_arrow_types_a_caption_at_its_tail() {
+        let mut c = canvas();
+        let mut state = ToolState {
+            tool: ToolKind::Arrow,
+            ..ToolState::default()
+        };
+        // Pointing right: the caption ends just left of the tail.
+        drag(
+            &mut c,
+            &state,
+            &line((100., 100.), (300., 100.), Mods::default()),
+        );
+        c.perform(&mut state, Action::Caption);
+        assert!(c.is_typing());
+        for ch in "Look here".chars() {
+            c.type_char(ch);
+        }
+        c.end_text();
+        let text = c.doc.annotations().last().unwrap();
+        let b = bounds(text).unwrap();
+        assert!(b.right() < 50.0 && b.right() > 35.0, "{b:?}");
+        assert!(
+            b.top() < 50.0 && b.bottom() > 50.0,
+            "level with the tail: {b:?}"
+        );
+
+        // Enter means nothing once something else happened.
+        drag(
+            &mut c,
+            &state,
+            &line((100., 200.), (300., 200.), Mods::default()),
+        );
+        c.pointer_down(&state, at(10., 10.), Button::Left);
+        c.pointer_up(&state, at(10., 10.));
+        c.perform(&mut state, Action::Caption);
+        assert!(!c.is_typing());
     }
 
     #[test]

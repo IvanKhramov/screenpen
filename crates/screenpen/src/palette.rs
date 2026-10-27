@@ -906,6 +906,16 @@ fn draw_icon(
                 .and_then(PathBuilder::from_oval);
             stroke(pixmap, oval, ink, 2.0, t, o);
         }
+        Action::Caption => {
+            line(pixmap, &[(4.0, 16.0), (10.0, 10.0)], 2.0);
+            fill(
+                pixmap,
+                glyph(Rect::new(6.0, 0.0, 14.0, 12.0), "T", 11.0),
+                ink,
+                t,
+                o,
+            );
+        }
         Action::Preset(i) | Action::SavePreset(i) => {
             let r = tiny_skia::Rect::from_xywh(3.0, 3.0, 14.0, 14.0)
                 .and_then(|r| rounded(Rect::from_skia(r), 3.5));

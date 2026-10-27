@@ -227,6 +227,7 @@ impl Lang {
             Action::BringToFront => fixed("Bring to front", "Наверх"),
             Action::DeleteSelection => fixed("Delete selection", "Удалить выделенное"),
             Action::Escape => fixed("Deselect / stop drawing", "Снять выделение / закончить"),
+            Action::Caption => fixed("Caption the arrow", "Подпись к стрелке"),
             Action::Ghost => fixed("Mouse", "Мышь"),
             Action::Whiteboard => fixed("Whiteboard", "Белая доска"),
             Action::Spotlight => fixed("Spotlight", "Прожектор"),

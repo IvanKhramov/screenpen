@@ -213,6 +213,8 @@ pub enum Action {
     DeleteSelection,
     /// Deselect, or stop drawing when nothing is selected.
     Escape,
+    /// Right after an arrow: type a caption at its tail.
+    Caption,
     Ghost,
     Whiteboard,
     /// Dim everything except a circle around the pointer.
@@ -263,6 +265,7 @@ impl Action {
                     Action::BringToFront => "bring_to_front",
                     Action::DeleteSelection => "delete_selection",
                     Action::Escape => "escape",
+                    Action::Caption => "caption",
                     Action::Ghost => "ghost",
                     Action::Whiteboard => "whiteboard",
                     Action::Spotlight => "spotlight",
@@ -361,6 +364,7 @@ impl Default for Shortcuts {
             (Action::BringToFront, Some(Chord::ctrl(Char(']')))),
             (Action::DeleteSelection, Some(Chord::key(Key::Delete))),
             (Action::Escape, Some(Chord::key(Key::Escape))),
+            (Action::Caption, Some(Chord::key(Key::Enter))),
             (Action::Ghost, key('G')),
             (Action::Whiteboard, key('W')),
             (Action::Spotlight, key('S')),
