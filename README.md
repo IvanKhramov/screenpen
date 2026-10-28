@@ -64,13 +64,17 @@ the whiteboard, dimming, fading, start at sign-in, settings and quit.
 Click with the text tool and type. Text edits like any text field: arrows, Home/End,
 Ctrl+arrows by words, Shift selects, the mouse places the caret and drag selects, double-click
 selects a word, Ctrl+A/C/X/V, Ctrl+Z/Y inside the text, Enter for a new line, Ctrl+Enter or Esc
-to finish (Cmd instead of Ctrl on a Mac). Ctrl+= and Ctrl+- (or Ctrl+wheel) change the size,
+to finish. Ctrl+= and Ctrl+- (or Ctrl+wheel) change the size,
 Ctrl+B and Ctrl+I bold and italic. Font, plate and outline are in Settings → Text. Double-click
 existing text with the select tool to edit it.
 
 ## Shortcuts
 
 ![Shortcuts](docs/shortcuts.png)
+
+On a Mac, Cmd does everything Ctrl does below (Cmd+Z, Cmd+drag for the magnet, the
+Cmd+Alt+Shift+A global shortcut), and the app shows Cmd in its hints. In text, Alt+arrows move
+by words and Cmd+arrows to the line ends.
 
 | Key | Action |
 |---|---|

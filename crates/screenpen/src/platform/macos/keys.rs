@@ -128,10 +128,11 @@ pub fn code_from_key(key: Key) -> Option<u16> {
         })
 }
 
+/// Cmd does what Ctrl does elsewhere (Cmd+Z, Cmd+drag for the magnet); Control works too.
 pub fn mods(event: &NSEvent) -> Mods {
     let flags = event.modifierFlags();
     Mods {
-        ctrl: flags.contains(NSEventModifierFlags::Control),
+        ctrl: flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control),
         alt: flags.contains(NSEventModifierFlags::Option),
         shift: flags.contains(NSEventModifierFlags::Shift),
     }
@@ -150,7 +151,7 @@ pub fn chord(event: &NSEvent) -> Option<Chord> {
 }
 
 /// Mac editing habits mapped onto the Ctrl-based ones the canvas knows:
-/// Cmd+letter is Ctrl+letter, Option+arrow or Option+Backspace work by words,
+/// Option+arrow or Option+Backspace work by words,
 /// Cmd+Left/Right go to the line ends, Cmd+Up/Down to the text ends.
 pub fn edit_chord(event: &NSEvent, mut c: Chord) -> Chord {
     let flags = event.modifierFlags();
@@ -176,20 +177,20 @@ pub fn edit_chord(event: &NSEvent, mut c: Chord) -> Chord {
             c.ctrl = true;
             c.alt = false;
         }
-        Key::Char(_) | Key::Enter if cmd => c.ctrl = true,
         _ => {}
     }
     c
 }
 
-/// Carbon modifier mask (`controlKey`, `optionKey`, `shiftKey`) for a global hotkey.
+/// Carbon modifier mask (`cmdKey`, `optionKey`, `shiftKey`) for a global hotkey:
+/// a chord's Ctrl is Cmd on a Mac.
 pub fn carbon_modifiers(chord: Chord) -> u32 {
+    const CMD: u32 = 0x0100;
     const SHIFT: u32 = 0x0200;
     const OPTION: u32 = 0x0800;
-    const CONTROL: u32 = 0x1000;
     let mut m = 0;
     if chord.ctrl {
-        m |= CONTROL;
+        m |= CMD;
     }
     if chord.alt {
         m |= OPTION;

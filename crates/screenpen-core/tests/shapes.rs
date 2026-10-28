@@ -1,5 +1,5 @@
 use screenpen_core::render::{Fill, bounds, hit_test, render_parts};
-use screenpen_core::shortcuts::{Action, Chord, Key, Shortcuts, next_width};
+use screenpen_core::shortcuts::{Action, CTRL, Chord, Key, Shortcuts, next_width};
 use screenpen_core::tools::{shape_geometry, snap_angle};
 use screenpen_core::{
     Annotation, BadgeFormat, Geometry, Point, Rect, Rgba, Style, TextStyle, ToolKind,
@@ -230,11 +230,17 @@ fn chords_round_trip_through_text() {
         "Ctrl++",
     ] {
         let chord: Chord = text.parse().unwrap();
-        assert_eq!(chord.to_string(), text);
+        assert_eq!(chord.to_string(), text.replace("Ctrl", CTRL));
+        // The settings file always says Ctrl, whatever the system calls it.
+        assert_eq!(serde_json::to_string(&chord).unwrap(), format!("{text:?}"));
     }
     assert_eq!(
         "ctrl+shift+z".parse::<Chord>().unwrap(),
         Chord::ctrl_shift(Key::Char('Z'))
+    );
+    assert_eq!(
+        "Cmd+Z".parse::<Chord>().unwrap(),
+        Chord::ctrl(Key::Char('Z'))
     );
     assert!("Hyper+A".parse::<Chord>().is_err());
 }

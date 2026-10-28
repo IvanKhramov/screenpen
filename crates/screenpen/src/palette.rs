@@ -8,7 +8,7 @@ use tiny_skia::{
     FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, PixmapMut, Stroke, Transform,
 };
 
-use crate::i18n::{Lang, T};
+use crate::i18n::{self, Lang, T};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Item {
@@ -1694,12 +1694,19 @@ pub fn render_cheat_sheet(
             "Ctrl+C  X",
         ),
         (if ru { "Вставить" } else { "Paste" }, "Ctrl+V"),
-        (if ru { "По словам" } else { "By words" }, "Ctrl+←→"),
+        (
+            if ru { "По словам" } else { "By words" },
+            if cfg!(target_os = "macos") {
+                "Alt+←→"
+            } else {
+                "Ctrl+←→"
+            },
+        ),
         (if ru { "Выделять" } else { "Select" }, "Shift+←→"),
         (if ru { "Готово" } else { "Done" }, "Ctrl+Enter"),
     ]
     .iter()
-    .map(|(a, b)| (a.to_string(), b.to_string()))
+    .map(|(a, b)| (a.to_string(), i18n::keys(b).to_string()))
     .collect();
     let titles = if ru {
         ["Рисование", "Показ", "Правка", "Пока печатаете"]

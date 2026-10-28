@@ -31,8 +31,7 @@ use objc2::sel;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
     NSApplicationDidChangeScreenParametersNotification, NSCursor, NSEvent, NSEventMask,
-    NSEventModifierFlags, NSEventSubtype, NSEventType, NSMenu, NSPointingDeviceType,
-    NSRunningApplication, NSScreen,
+    NSEventSubtype, NSEventType, NSMenu, NSPointingDeviceType, NSRunningApplication, NSScreen,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
@@ -768,15 +767,7 @@ fn on_input_seen(app: &mut App, event: &NSEvent) {
         let Some(chord) = keys::chord(event) else {
             return;
         };
-        if event
-            .modifierFlags()
-            .contains(NSEventModifierFlags::Command)
-        {
-            o.canvas.show_label(format!("Cmd+{chord}"));
-            true
-        } else {
-            o.canvas.show_keys(chord)
-        }
+        o.canvas.show_keys(chord)
     } else {
         let s = o.canvas.scale() as f64;
         let (x, y) = ((at.0 - o.frame.x) * s, (at.1 - o.frame.y) * s);

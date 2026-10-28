@@ -607,12 +607,6 @@ impl Canvas {
         !plain
     }
 
-    /// Shows a shortcut already put into words (macOS adds Cmd, which chords lack).
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub fn show_label(&mut self, label: String) {
-        self.keycast = Some((label, now()));
-    }
-
     fn keycast_layout(&self) -> Option<(Rect, tiny_skia::Path)> {
         let (text, _) = self.keycast.as_ref()?;
         let path = screenpen_core::text::path(text, KEYCAST_SIZE, Point::default())?;

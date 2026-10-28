@@ -1,6 +1,6 @@
 //! English and Russian UI strings.
 
-use screenpen_core::{Action, ToolKind};
+use screenpen_core::{Action, CTRL, ToolKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
@@ -49,8 +49,26 @@ pub enum T {
     NoShortcut,
 }
 
+/// A text with "Ctrl" in it as this system says it: "Cmd" on a Mac.
+pub fn keys(text: &'static str) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    if CTRL == "Ctrl" || !text.contains("Ctrl") {
+        return text;
+    }
+    // The texts are a fixed set of literals, so each is rewritten once and kept.
+    static DONE: OnceLock<Mutex<HashMap<&'static str, &'static str>>> = OnceLock::new();
+    let mut done = DONE.get_or_init(Default::default).lock().unwrap();
+    done.entry(text)
+        .or_insert_with(|| text.replace("Ctrl", CTRL).leak())
+}
+
 impl Lang {
     pub fn t(self, key: T) -> &'static str {
+        keys(self.text(key))
+    }
+
+    fn text(self, key: T) -> &'static str {
         use Lang::*;
         use T::*;
         match (self, key) {

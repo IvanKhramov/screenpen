@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, RichText};
 use screenpen_core::{Action, Chord, Key, Rgba, Shortcuts, TextStyle};
 
 use crate::config::{Settings, default_path, parse_hex};
-use crate::i18n::Lang;
+use crate::i18n::{self, Lang};
 use crate::palette::{Item, Look, Palette, Theme, chord_label, render_item_icon};
 use crate::snapshots;
 use crate::state::{DIM_LEVELS, FADE_SECONDS, TIMER_MINUTES, ToolState, UI_SCALE, step_ui_scale};
@@ -188,7 +188,7 @@ fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
 
 /// Picks the English or Russian text.
 fn tr(lang: Lang, en: &'static str, ru: &'static str) -> &'static str {
-    if lang == Lang::Ru { ru } else { en }
+    i18n::keys(if lang == Lang::Ru { ru } else { en })
 }
 
 impl SettingsApp {
@@ -911,11 +911,19 @@ impl SettingsApp {
                     ),
                     (
                         tr(lang, "Move by words, select", "По словам, выделение"),
-                        "Ctrl / Shift + ←→",
+                        if cfg!(target_os = "macos") {
+                            "Alt / Shift + ←→"
+                        } else {
+                            "Ctrl / Shift + ←→"
+                        },
                     ),
                     (
                         tr(lang, "Line start and end", "Начало и конец строки"),
-                        "Home  End",
+                        if cfg!(target_os = "macos") {
+                            "Cmd+←→"
+                        } else {
+                            "Home  End"
+                        },
                     ),
                     (
                         tr(lang, "Text size", "Размер текста"),
@@ -931,7 +939,7 @@ impl SettingsApp {
                     .show(ui, |ui| {
                         for (what, key) in keys {
                             ui.label(what);
-                            ui.label(RichText::new(key).monospace().color(ACCENT));
+                            ui.label(RichText::new(i18n::keys(key)).monospace().color(ACCENT));
                             ui.end_row();
                         }
                     });
@@ -939,8 +947,8 @@ impl SettingsApp {
                 ui.label(
                 RichText::new(tr(
                     lang,
-                    "Click inside the text to move the caret, drag to select, double-click selects a word. On a Mac, Cmd works instead of Ctrl.",
-                    "Клик внутри текста ставит курсор, протяжка выделяет, двойной клик выделяет слово. На Mac вместо Ctrl работает Cmd.",
+                    "Click inside the text to move the caret, drag to select, double-click selects a word.",
+                    "Клик внутри текста ставит курсор, протяжка выделяет, двойной клик выделяет слово.",
                 ))
                 .weak(),
             );
@@ -1272,7 +1280,8 @@ impl SettingsApp {
                 continue;
             };
             let chord = Chord {
-                ctrl: modifiers.ctrl,
+                // Cmd on a Mac.
+                ctrl: modifiers.ctrl || modifiers.mac_cmd,
                 alt: modifiers.alt,
                 shift: modifiers.shift,
                 key,

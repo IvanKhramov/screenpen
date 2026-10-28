@@ -136,10 +136,17 @@ impl Chord {
     }
 }
 
-impl fmt::Display for Chord {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// What the Ctrl of a chord is called on this system: Cmd plays its part on a Mac.
+pub const CTRL: &str = if cfg!(target_os = "macos") {
+    "Cmd"
+} else {
+    "Ctrl"
+};
+
+impl Chord {
+    fn write(&self, f: &mut impl fmt::Write, ctrl: &str) -> fmt::Result {
         if self.ctrl {
-            f.write_str("Ctrl+")?;
+            write!(f, "{ctrl}+")?;
         }
         if self.alt {
             f.write_str("Alt+")?;
@@ -148,6 +155,13 @@ impl fmt::Display for Chord {
             f.write_str("Shift+")?;
         }
         write!(f, "{}", self.key)
+    }
+}
+
+/// As shown to the user: "Cmd+Z" on a Mac, "Ctrl+Z" elsewhere.
+impl fmt::Display for Chord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write(f, CTRL)
     }
 }
 
@@ -164,7 +178,7 @@ impl FromStr for Chord {
         let mut chord = Chord::key(key.trim().parse()?);
         for m in mods.split('+').map(str::trim).filter(|m| !m.is_empty()) {
             match m.to_ascii_lowercase().as_str() {
-                "ctrl" | "control" => chord.ctrl = true,
+                "ctrl" | "control" | "cmd" | "command" => chord.ctrl = true,
                 "alt" | "option" => chord.alt = true,
                 "shift" => chord.shift = true,
                 other => return Err(format!("unknown modifier {other:?}")),
@@ -175,8 +189,12 @@ impl FromStr for Chord {
 }
 
 impl Serialize for Chord {
+    /// Always "Ctrl", so the settings file reads the same on every system.
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_str(self)
+        let mut text = String::new();
+        self.write(&mut text, "Ctrl")
+            .map_err(serde::ser::Error::custom)?;
+        s.serialize_str(&text)
     }
 }
 
