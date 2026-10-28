@@ -258,7 +258,7 @@ const MAGNET_RADIUS: f32 = 10.0;
 /// How much of an edge a guide shows each side of the pointer, in points.
 const GUIDE_REACH: f32 = 120.0;
 
-/// Ctrl turns the magnet on for shapes, the pen's Ctrl shapes included.
+/// Ctrl turns the magnet on for shapes, the pen's Ctrl lines included.
 fn magnet(state: &ToolState, mods: Mods) -> bool {
     mods.ctrl
         && matches!(
@@ -1245,10 +1245,11 @@ impl Canvas {
             }
         }
         match state.tool {
+            // Ctrl is the magnet: with the pen it draws a straight line along an edge.
             ToolKind::Pen if p.mods.ctrl && p.mods.alt => {
-                self.begin_shape(ToolKind::Ellipse, at, true)
+                self.begin_shape(ToolKind::Arrow, at, true)
             }
-            ToolKind::Pen if p.mods.ctrl => self.begin_shape(ToolKind::Rectangle, at, true),
+            ToolKind::Pen if p.mods.ctrl => self.begin_shape(ToolKind::Line, at, true),
             ToolKind::Pen if p.mods.alt => self.begin_shape(ToolKind::Arrow, at, false),
             ToolKind::Pen | ToolKind::Highlighter => self.begin_freehand(state, state.tool, &p, at),
             tool @ (ToolKind::Line
@@ -1437,7 +1438,7 @@ impl Canvas {
             let frames = self.spotlight.is_some()
                 || matches!(
                     state.tool,
-                    ToolKind::Pen | ToolKind::Rectangle | ToolKind::Ellipse | ToolKind::Pixelate
+                    ToolKind::Rectangle | ToolKind::Ellipse | ToolKind::Pixelate
                 );
             self.snap_hint = frames.then(|| map.box_at(at)).flatten();
             let s = map.snap(at, MAGNET_RADIUS);
@@ -2470,17 +2471,41 @@ mod tests {
     }
 
     #[test]
+    fn pen_ctrl_draws_a_line_along_an_edge() {
+        let mut c = canvas();
+        let state = ToolState::default();
+        assert!(c.needs_screen(&state, CTRL));
+        c.set_screen(Some(panel_screen()));
+        drag(&mut c, &state, &line((86., 66.), (314., 66.), CTRL));
+        let [a] = c.doc.annotations() else { panic!() };
+        let Geometry::Line { from, to } = a.geometry else {
+            panic!("{:?}", a.geometry)
+        };
+        assert_eq!(
+            (from, to),
+            (Point::new(40.0, 30.0), Point::new(160.0, 30.0))
+        );
+    }
+
+    #[test]
     fn magnet_click_frames_the_box_under_the_pointer() {
         let mut c = canvas();
         let mut state = ToolState::default();
         c.set_screen(Some(panel_screen()));
-        // Hovering shows the box first.
+        // The pen's Ctrl line has no box to show or frame.
+        c.hover(&state, with(CTRL, 200., 150.));
+        assert_eq!(c.snap_hint, None);
+        drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
+        assert!(c.doc.annotations().is_empty());
+
+        // With the rectangle, hovering shows the box first.
+        state.tool = ToolKind::Rectangle;
         c.hover(&state, with(CTRL, 200., 150.));
         assert_eq!(c.snap_hint, Some(Rect::new(40.0, 30.0, 120.0, 90.0)));
         c.hover(&state, at(200., 150.));
         assert_eq!(c.snap_hint, None);
 
-        // The pen's Ctrl rectangle frames it just outside.
+        // A click frames it just outside.
         drag(&mut c, &state, &[with(CTRL, 200., 150.)]);
         let pad = state.style(ToolKind::Rectangle).width / 2.0 + 2.0;
         assert_eq!(
@@ -2490,7 +2515,6 @@ mod tests {
 
         // Nothing to frame outside the panel.
         c.doc.remove_all();
-        state.tool = ToolKind::Rectangle;
         drag(&mut c, &state, &[with(CTRL, 20., 20.)]);
         assert!(c.doc.annotations().is_empty());
     }
@@ -2739,8 +2763,8 @@ mod tests {
         assert_eq!(
             kinds(&c),
             [
-                AnnotationKind::Rectangle,
-                AnnotationKind::Ellipse,
+                AnnotationKind::Line,
+                AnnotationKind::Arrow,
                 AnnotationKind::Arrow
             ]
         );
@@ -2749,9 +2773,11 @@ mod tests {
     #[test]
     fn shift_makes_a_square() {
         let mut c = canvas();
-        let state = ToolState::default();
+        let state = ToolState {
+            tool: ToolKind::Rectangle,
+            ..ToolState::default()
+        };
         let mods = Mods {
-            ctrl: true,
             shift: true,
             ..Mods::default()
         };

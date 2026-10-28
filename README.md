@@ -95,13 +95,13 @@ existing text with the select tool to edit it.
 | ? | All shortcuts |
 | Ctrl+Alt+Shift+Q | Quit |
 
-With the pen: hold Ctrl for a rectangle, Ctrl+Alt for an ellipse, Alt for an arrow. Shift makes
+With the pen: hold Ctrl for a straight line along the magnet, Ctrl+Alt for such an arrow, Alt for an arrow. Shift makes
 lines snap to 45° and shapes square. Alt with the arrow tool bends the arrow. Hold the right mouse
 button (or use a pen's eraser end) to erase with any tool. Pen pressure changes the width.
 Hold the pen still for half a second at the end of a stroke and a wobbly line, box or circle
 becomes a straight line, rectangle or ellipse.
 
-Magnet: with Ctrl held, rectangles, ellipses, lines, arrows and pixelation stick to the edges of
+Magnet: with Ctrl held, rectangles, ellipses, lines, arrows (the pen's Ctrl lines too) and pixelation stick to the edges of
 windows, panels and buttons on the screen, and cyan guides show the edge. Ctrl+click without
 dragging frames the box under the pointer (pixelates it with B; with the spotlight on, lights just
 that box); a dashed outline shows it before you click. The magnet and pixelation look at
